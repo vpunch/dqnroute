@@ -49,7 +49,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument("config_files", type=str, nargs="+",
                     help="YAML config file(s) with the conveyor topology graph, input scenario and settings "
                          "of routing algorithms (all files will be concatenated into one)")
-parser.add_argument("--routing_algorithms", type=str, default="dqn_emb,centralized_simple,link_state,simple_q,ppo_emb",
+parser.add_argument("--routing_algorithms", type=str, default="dqn_emb,centralized_simple,link_state,simple_q",
                     help="comma-separated list of routing algorithms to run "
                          "(possible entries: dqn_emb, centralized_simple, link_state, simple_q, ppo_emb, random)")
 parser.add_argument("--command", type=str, default="run",
@@ -354,6 +354,7 @@ def train_dqn(
     )
 
     world = runner.world
+
     some_router = next(iter(next(iter(world.handlers.values())).routers.values()))
 
     net = some_router.brain
@@ -384,6 +385,7 @@ def dqn_experiments(
         process_train: bool = True
 ):
     dqn_logs = []
+    dqn_worlds = []
 
     for _ in range(n):
         if process_pretrain:
@@ -417,8 +419,9 @@ def dqn_experiments(
             print('Skip training process...')
 
         dqn_logs.append(dqn_log.getSeries(add_avg=True))
+        dqn_worlds.append(dqn_world)
 
-    return dqn_logs
+    return dqn_logs, dqn_worlds
 
 
 # whole pipeline
@@ -443,8 +446,12 @@ if dqn_emb_exists:
 
     print(f'Model: {pretrain_path}')
 
-    dqn_combined_model_results = dqn_experiments(1, True, True, True, False, True)
-    dqn_single_model_results = dqn_experiments(1, False, True, True, False, True)
+    # dqn_combined_model_results, _ = dqn_experiments(1, True, True, True, False, True)
+    dqn_single_model_results, dqn_single_model_worlds = dqn_experiments(1, False, True, True, False, True)
+
+    g = RouterGraph(dqn_single_model_worlds[0])  # todo FIX
+    print("Reachability matrix:")
+    g.print_reachability_matrix()
 
 
 # PPO part (pre-train + train)
@@ -886,7 +893,7 @@ if reinforce_emb_exists:
 
     print(f'Reinforce model: {reinforce_pretrain_path}')
 
-    for _ in range(10):
+    for _ in range(30):
         PackageHistory.routers = defaultdict(dict)
         PackageHistory.rewards = defaultdict(list)
         PackageHistory.log_probs = defaultdict(list)
@@ -1033,6 +1040,10 @@ if args.command == "run":
     series_types = []
 
     def get_results(results, name):
+        df = pd.concat(results, ignore_index=True)
+        print(type(df))
+        df.to_csv(f'{name}_all_results.csv')
+
         global series
         global series_types
 
@@ -1055,9 +1066,8 @@ if args.command == "run":
         return basic_series
 
     if dqn_emb_exists:
-        single_series = get_results(dqn_single_model_results, 'DQN-LE-SINGLE')
-        combined_series = get_results(dqn_combined_model_results, 'DQN-LE-COMBINED')
-
+        single_series = get_results(dqn_single_model_results, 'DQN-LE')
+        # combined_series = get_results(dqn_combined_model_results, 'DQN-LE-COMBINED')
 
     if ppo_emb_exists:
         series += [ppo_log.getSeries(add_avg=True)]
@@ -1065,17 +1075,15 @@ if args.command == "run":
         series_types += ['ppo_emb']
 
     if reinforce_emb_exists:
-        reinforce_basic_series = None
-        for s in reinforce_serieses:
-            if reinforce_basic_series is None:
-                reinforce_basic_series = s
-            else:
-                reinforce_basic_series += s
-        reinforce_basic_series /= len(reinforce_serieses)
-
-        series += [reinforce_basic_series]
-        print(f'REINFORCE mean time: {np.mean(reinforce_basic_series["energy_sum"])}')
-        series_types += ['reinforce_emb']
+        reinforce_series = get_results(reinforce_serieses, 'REINFORCE')
+        print(type(reinforce_series))
+        # reinforce_basic_series = None
+        # for s in reinforce_serieses:
+        #     if reinforce_basic_series is None:
+        #         reinforce_basic_series = s
+        #     else:
+        #         reinforce_basic_series += s
+        # reinforce_basic_series /= len(reinforce_serieses)
 
     # perform training/simulation with other approaches
     for router_type in router_types:

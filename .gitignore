@@ -1,6 +1,6 @@
 result
 tf_models
-torch_models
+#torch_models
 pythonenv
 __pycache__
 logs*

@@ -1,5 +1,5 @@
 -e src
--e GEM
+#-e GEM
 jupyter>=1.0.0
 jupyter-client>=5.2.3
 jupyterlab>=0.35.4
