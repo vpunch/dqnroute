@@ -15,8 +15,18 @@ ARGS_TARAU = ["conveyor_topology_tarau",
               "tarau2010_settings_regular"]
 MARABOU_MEMORY_LIMIT = "--linux_marabou_memory_limit_mb 12288"
 
+def full_eav(bound: float, epsilon: float):
+    run("full_embedding_adversarial_verification", *ARGS_MUKHUTDINOV, bound,
+        f"--skip_graphviz --input_eps_l_inf {epsilon} "
+        f"{MARABOU_MEMORY_LIMIT}")
+
 def embedding_verification_mukhutdinov(bound: float, epsilon: float, source: int, sink: int):
     run("embedding_adversarial_verification", *ARGS_MUKHUTDINOV, bound,
+        f"--skip_graphviz --single_source {source} --single_sink {sink} --input_eps_l_inf {epsilon} "
+        f"{MARABOU_MEMORY_LIMIT}")
+
+def embedding_adversarial_search(epsilon: float, source: int, sink: int):
+    run("embedding_adversarial_search", *ARGS_MUKHUTDINOV,
         f"--skip_graphviz --single_source {source} --single_sink {sink} --input_eps_l_inf {epsilon} "
         f"{MARABOU_MEMORY_LIMIT}")
 
@@ -67,34 +77,38 @@ def run_with_timeout(fun: Callable, args: List, timeout_sec: int):
     
 if __name__ == "__main__":
     TIMEOUT = 60 * 120
+
+    for eps in [0.01]:
+        run_with_timeout(embedding_adversarial_search, [eps, 1, 2], TIMEOUT)
+        #run_with_timeout(embedding_verification_mukhutdinov, [c0, eps, 1, 2], TIMEOUT)
     
     # original, 1 -> 3
     #for eps in [0., 0.01, 0.1, 0.2, 0.4, 0.8, 1.6]:
-    for eps in [0.01]:
-        #for c0 in [81.0, 44.0, 43.5, 43.12, 43.1]:
-        for c0 in [81.0, 44.0, 43.5, 43.12, 43.1]:
-            run_with_timeout(embedding_verification_mukhutdinov, [c0, eps, 1, 3], TIMEOUT)
-    
-    # original, 1 -> 2
-    #for eps in [0., 0.01, 0.1, 0.2, 0.4, 0.8, 1.6]:
-    for eps in [0.01]:
-        #for c0 in [72.8, 54.12, 53.11, 53.1, 53.0]:
-        for c0 in [72.8, 54.12, 53.11, 53.1, 53.0]:
-            run_with_timeout(embedding_verification_mukhutdinov, [c0, eps, 1, 2], TIMEOUT)
+    #for eps in [0.01]:
+    #    for c0 in [81.0, 44.0, 43.5, 43.12, 43.1]:
+    #    #for c0 in [81.0, 44.0, 43.5, 43.12, 43.1]:
+    #        run_with_timeout(embedding_verification_mukhutdinov, [c0, eps, 1, 3], TIMEOUT)
+    #
+    ## original, 1 -> 2
+    ##for eps in [0., 0.01, 0.1, 0.2, 0.4, 0.8, 1.6]:
+    #for eps in [0.01]:
+    #    #for c0 in [72.8, 54.12, 53.11, 53.1, 53.0]:
+    #    for c0 in [72.8, 54.12, 53.11, 53.1, 53.0]:
+    #        run_with_timeout(embedding_verification_mukhutdinov, [c0, eps, 1, 2], TIMEOUT)
     
     # tarau, 0 -> 1
     #for eps in [0., 0.01, 0.1, 0.2, 0.4, 0.8, 1.6]:
-    for eps in [0.01]:
-        #for c0 in [825.0, 820.0, 819.0, 818.6, 818.0]:
-        for c0 in [825.0, 820.0, 819.0, 818.6, 818.0]:
-            run_with_timeout(embedding_verification_tarau, [c0, eps, 0, 1], TIMEOUT)
+    #for eps in [0.01]:
+    #    #for c0 in [825.0, 820.0, 819.0, 818.6, 818.0]:
+    #    for c0 in [825.0, 820.0, 819.0, 818.6, 818.0]:
+    #        run_with_timeout(embedding_verification_tarau, [c0, eps, 0, 1], TIMEOUT)
     
     # tarau, 2 -> 0
     #for eps in [0., 0.01, 0.1, 0.2, 0.4, 0.8, 1.6]:
-    for eps in [0.01]:
-        #for c0 in [830.0, 820.0, 819.0, 818.4, 818.0]:
-        for c0 in [830.0, 820.0, 819.0, 818.4, 818.0]:
-            run_with_timeout(embedding_verification_tarau, [c0, eps, 2, 0], TIMEOUT)
+    #for eps in [0.01]:
+    #    #for c0 in [830.0, 820.0, 819.0, 818.4, 818.0]:
+    #    for c0 in [830.0, 820.0, 819.0, 818.4, 818.0]:
+    #        run_with_timeout(embedding_verification_tarau, [c0, eps, 2, 0], TIMEOUT)
     
     #lipschitz_verification_mukhutdinov(43.563)
     #lipschitz_verification_mukhutdinov(65.616)

@@ -8,12 +8,14 @@ from ..simulation.conveyors import ConveyorsEnvironment
 
 from .ml_util import Util
 
+import networkx as nx
+
 class RouterGraph:
     """
     Clear graph representation of the conveyor network.
     """
-    
-    def __init__(self, world: ConveyorsEnvironment):
+
+    def __init__(self, world: ConveyorsEnvironment, node_sink=None):
         """
         Constructs RouterGraph based on the description of the conveyor network,
         including the one of the agents. Works only for DQNRoute-LE and requires that
@@ -24,7 +26,16 @@ class RouterGraph:
         self.world = world
         self.graph = world.topology_graph
         self.routers = world.handlers
-        
+        #print('routers')
+        #print(self.routers)
+        #print('router_keeper?')
+        #for item in self.routers.items():
+        #    print('routers of keeper')
+        #    print(item[0])
+        #    print(item[1])
+        #    print(item[1].routers)
+
+
         self.check_embeddings()
         
         # add source/diverter/sink -> router mapping
@@ -35,6 +46,11 @@ class RouterGraph:
                 self.q_network = router.brain
                 self.node_repr = router._nodeRepr
                 nw = router.network
+
+                #if node_sink is not None:
+                #    edges = list(nw.edges(node_sink))
+                #    nw.remove_edges_from(edges)
+
         self.q_network.ff_net = Util.conditional_to_cuda(self.q_network.ff_net)
         
         # add junction -> router mapping
@@ -44,7 +60,11 @@ class RouterGraph:
             junction_keys = [cp_index for cp_index, cp in m.checkpoints if cp_index[0] == "junction"]
             for router_key, junction_key in zip(router_keys, junction_keys):
                 self.node_to_router[junction_key] = router_key
-        
+
+        #print('node_to_router')
+        #print(self.node_to_router)
+        #{('sink', 0): ('router', 14), ..., ('diverter', 0): ('router', 0), ...
+
         #self.router_to_node = {v: k for k, v in self.node_to_router.items()}
         #print(sorted([(self.router_to_node[from_node], self.router_to_node[to_node]) for from_node, to_node in nw.edges()]))
         
@@ -57,27 +77,41 @@ class RouterGraph:
                        + [(2, key) for key in self.node_keys if key[0] == "sink"] \
                        + [(1, key) for key in self.node_keys if key[0] not in ["source", "sink"]]
         self.node_keys = [x[1] for x in sorted(self.node_keys)]
+        #print(self.node_keys)
+        #[('source', 0), ('source', 1), ('diverter', 0), ('diverter', 1),
+
         print(f"Graph size = {len(self.node_keys)}")
         self.node_keys_to_indices = {key: i for i, key in enumerate(self.node_keys)}
         self.indices_to_node_keys = {i: key for i, key in enumerate(self.node_keys)}
-        
+ 
         # 3. list of nodes of particular types
         nodes_of_type = lambda s: [node_key for node_key in self.node_keys if node_key[0] == s]
         self.sources = nodes_of_type("source")
         self.sinks = nodes_of_type("sink")
+
+
+        #self.sinks.append(sink)
+
+
         self.diverters = nodes_of_type("diverter")
         
         # 4. find edge lengths from junctions and diverter-routers 
+
         self.conveyor_models: dict = world.conveyor_models
+
         self._agent_id_to_edge_lengths = {}
         self._node_to_conveyor_ids = {node_key: set() for node_key in self.node_keys}
+
         for source_key in self.sources:
             self._node_to_conveyor_ids[source_key].add(world.layout["sources"][source_key[1]]["upstream_conv"])
-        
+            #print(world.layout['sources'])
+
         self.junctions = set()
         
         for conveyor_index, m in self.conveyor_models.items():
             checkpoints = m.checkpoints
+            #print('HELLO')
+            #print(checkpoints)
             for cp_index, cp in enumerate(checkpoints):
                 self._node_to_conveyor_ids[cp[0]].add(conveyor_index)
             
@@ -96,6 +130,8 @@ class RouterGraph:
             # add diverter in the beginning, if any:
             for diverter_index, diverter_dict in world.layout["diverters"].items():
                 if diverter_dict["upstream_conv"] == conveyor_index:
+                    #print('DIV_DICT')
+                    #print(diverter_dict)
                     self._node_to_conveyor_ids[("diverter", diverter_index)].add(conveyor_index)
                     checkpoints = [(("sourcing_diverter", diverter_index), 0)] + checkpoints
                     break
@@ -107,15 +143,19 @@ class RouterGraph:
                 if checkpoint_node_key[0] == "junction":
                     self.junctions.add(checkpoint_node_key)
                 position = cp[1]
+
                 if cp_index < len(checkpoints) - 1:
                     next_position = checkpoints[cp_index + 1][1]
                 else:
                     next_position = m.length
+
                 edge_len = next_position - position
                 assert edge_len > 0
+
                 if checkpoint_node_key[0] in ["junction", "source", "diverter", "sourcing_diverter"]:
                     self._agent_id_to_edge_lengths[checkpoint_node_key] = edge_len
                     continue
+
                 for node_key, router_keeper in self.routers.items():
                     if node_key == checkpoint_node_key:
                         routers = list(router_keeper.routers.items())
@@ -145,11 +185,22 @@ class RouterGraph:
         ])
         assert our_router_edges == sorted(nw.edges()), f"{our_router_edges} != {sorted(nw.edges())}"
         #print("Edges between routers:", nw.edges())
+
+        for node in self.graph:
+            for l, r in self.graph.edges(node):
+                self.graph[l][r]['length'] = self.get_edge_length(l, r)
+
+
+        #if node_sink is not None:
+        #    edges = list(nw.edges(node_sink))
+        #    nw.remove_edges_from(edges)
         
-        # 5. compute reachability matrix
-        self.reachable = self._compute_reachability_matrix()
+        self.reachable = self._get_reachability_matrix()
+
         
+
     def check_embeddings(self):
+        # Каждый роутер должен считать эмбеддинги одинаково
         """
         Check that the embeddings are consistent between nodes.
         """
@@ -188,7 +239,8 @@ class RouterGraph:
              f"are not supported. A possible way to proceed is to split that diverging/converging "
              f"conveyor into two with an artificial single-input junction.")
         return intersection[0]
-            
+
+
     def to_graphviz(self) -> "pygraphviz.AGraph":
         """
         :return: Graphviz representation of the graph.
@@ -235,24 +287,23 @@ class RouterGraph:
         """
         return self.q_network.forward(current_embedding, sink_embedding, neighbor_embedding)
     
-    def _compute_reachability_matrix(self):
-        """
-        Computes the reachability matrix of the graph.
-        """
-        # Floyd-Warshall algorithm
-        # 1. initialize with self-reachability
-        reachable = {(k1, k2): k1 == k2 for k1 in self.node_keys for k2 in self.node_keys}
-        # 2. add transitions
-        for from_node in self.node_keys:
-            for to_node in self.get_out_nodes(from_node):
-                reachable[from_node, to_node] = True
-        # 3. close the transition relation
-        for k in self.node_keys:
-            for i in self.node_keys:
-                for j in self.node_keys:
-                    reachable[i, j] |= reachable[i, k] and reachable[k, j]
+    def _get_reachability_matrix(self, verbose=True):
+        reachable = {(k1, k2): k1 == k2 for k1 in self.node_keys
+                                        for k2 in self.node_keys}
+
+        for node_key in self.node_keys:
+            for d in list(nx.descendants(self.graph, node_key)):
+                reachable[node_key, d] = True
+
+        if verbose:
+            for k1 in self.node_keys:
+                for k2 in self.node_keys:
+                    print(int(reachable[k1, k2]), end=" ")
+
+                print(k1)
+
         return reachable
-    
+
     def get_edge_length(self, from_node_key: AgentId, to_node_key: AgentId) -> float:
         """
         Get the length of the edge between two nodes. It is required that this edge is unique.
@@ -262,12 +313,14 @@ class RouterGraph:
         """
         # Igor: the implementation of this method is not very clear.
         node_key = from_node_key
+
         if from_node_key[0] == "diverter":
             upstream_conv = self.world.layout["diverters"][from_node_key[1]]["upstream_conv"]
             #print(upstream_conv, self._node_to_conveyor_ids[to_node_key])
             if upstream_conv in self._node_to_conveyor_ids[to_node_key]:
                 node_key = "sourcing_diverter", from_node_key[1]
         #print(from_node_key, to_node_key, "->", node_key)
+
         return self._agent_id_to_edge_lengths[node_key]
         
     def get_out_nodes(self, node_key: AgentId) -> List[AgentId]:
@@ -295,15 +348,6 @@ class RouterGraph:
         """
         return [self.node_keys_to_indices[key]
                 for key in self.get_out_nodes(self.indices_to_node_keys[node_index])]
-    
-    def print_reachability_matrix(self):
-        """
-        Prints the reachability matrix to stdout.
-        """
-        for from_node in self.node_keys:
-            for to_node in self.node_keys:
-                print(1 if self.reachable[from_node, to_node] else 0, end="")
-            print(f" # from {from_node}")
     
     def _get_router_embedding(self, router_key: AgentId) -> torch.Tensor:
         """
@@ -340,4 +384,5 @@ class RouterGraph:
         :param node_key: node to query.
         :return: list of sources such that the given node is reachable from them.
         """
+        #return  self.sources
         return [source_key for source_key in self.sources if self.reachable[source_key, node_key]]

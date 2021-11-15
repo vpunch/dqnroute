@@ -1,110 +1,154 @@
-import sympy
-
 from typing import *
+
+import sympy as sym
+from sympy.matrices import eye, zeros, ones
+from sympy.solvers.solveset import linsolve
+import networkx as nx
+from networkx.drawing.nx_pydot import graphviz_layout
+import pydot
+import matplotlib.pyplot as plt
 
 from .router_graph import RouterGraph
 from ..utils import AgentId
 
 class MarkovAnalyzer:
-    """
-    This class computes the expected delivery time by modeling the delivery process as a discrete Markov
-    chain, where the states correspond to the nodes of the network and the transitions correspond to
-    conveyor sections. The transitions are weighted with conveyor section lengths. 
+    """The class to model the delivery process as a discrete Markov
+    chain, where the states correspond to the nodes of the network and
+    the transitions correspond to conveyor sections. The transitions are
+    weighted with conveyor section lengths.
     """
     
-    def __init__(self, g: RouterGraph, source: AgentId, sink: AgentId, simple_path_cost: bool = False,
-                 verbose: bool = True):
-        """
-        Constructs MarkovAnalyzer for a fixed source/sink pair.
-        :param g: RouterGraph.
-        :param source: the source.
-        :param sink: the sink.
-        :param simple_path_cost: whether to count the number of routing decisions and not the actual
-            delivery time.
-        :param verbose: print more (True/False).
-        """
-        self.g = g
-        self.source = source
+    def __init__(self,
+                 network: nx.DiGraph,
+                 sink: AgentId,
+                 simple_path_cost: bool,
+                 verbose: bool):
         self.sink = sink
-        
-        # remove the nodes that are not relevant for the delivery between this source and this sink
-        self.reachable_nodes = [node_key for node_key in g.node_keys
-                                if g.reachable[source, node_key] and g.reachable[node_key, sink]]
-        
-        if verbose:
-            print(f"  Nodes between {source} and {sink}: {self.reachable_nodes}")
-        
-        self.reachable_sources = [node_key for node_key in self.reachable_nodes if node_key[0] == "source"]
-        
-        # reindex nodes
-        self.reachable_nodes_to_indices = {node_key: i for i, node_key in enumerate(self.reachable_nodes)}
-        sink_index = self.reachable_nodes_to_indices[sink]
+        self.simple_path_cost = simple_path_cost
 
-        # filter out reachable diverters that have only one option due to shielding
-        next_nodes = lambda from_key: [to_key for to_key in g.get_out_nodes(from_key) if g.reachable[to_key, sink]]
-        self.nontrivial_diverters = [from_key for from_key in self.reachable_nodes if len(next_nodes(from_key)) > 1]
-        assert all(node_key[0] == "diverter" for node_key in self.nontrivial_diverters)
-        nontrivial_diverters_to_indices = {node_key: i for i, node_key in enumerate(self.nontrivial_diverters)}
+        self.__create_absorbing_chain(network, verbose)
 
-        system_size = len(self.reachable_nodes)
-        matrix = [[0 for _ in range(system_size)] for _ in range(system_size)]
-        bias = [[0] for _ in range(system_size)]
+        self.__find_edt_sol()
 
-        self.params = sympy.symbols([f"p{i}" for i in range(len(self.nontrivial_diverters))])
-        if verbose:
-            print(f"  parameters: {self.params}")
+    def __create_absorbing_chain(self, network: nx.DiGraph, verbose):
+        chain = network.copy()
+        # A sink must be an absorbing state
+        chain.remove_edges_from(list(chain.edges(self.sink)))
 
-        # fill the system of linear equations
-        # (compute the expected hitting time in a discrete Markov chain)
-        for i in range(system_size):
-            node_key = self.reachable_nodes[i]
-            matrix[i][i] = 1
-            if i == sink_index:
-                # zero hitting time for the target sink
-                assert node_key[0] == "sink"
-            elif node_key[0] in ["source", "junction", "diverter"]:
-                next_node_keys = next_nodes(node_key)
-                if simple_path_cost:
-                    bias[i][0] = 1
-                if len(next_node_keys) == 1:
-                    # only one possible destination
-                    # either sink, junction, or a diverter with only one option due to reachability shielding
-                    next_node_key = next_node_keys[0]
-                    matrix[i][self.reachable_nodes_to_indices[next_node_key]] = -1
-                    if not simple_path_cost:
-                        bias[i][0] = g.get_edge_length(node_key, next_node_key)
-                elif len(next_node_key) == 2:
-                    # two possible destinations
-                    k1, k2 = next_node_keys[0], next_node_keys[1]
-                    p = self.params[nontrivial_diverters_to_indices[node_key]]
-                    if verbose:
-                        print(f"      {p} = P({node_key} → {k1} | sink = {sink})" )
-                        print(f"  1 - {p} = P({node_key} → {k2} | sink = {sink})" )
-                    if k1 != sink:
-                        matrix[i][self.reachable_nodes_to_indices[k1]] = -p
-                    if k2 != sink:
-                        matrix[i][self.reachable_nodes_to_indices[k2]] = p - 1
-                    if not simple_path_cost:
-                        bias[i][0] = g.get_edge_length(node_key, k1) * p + g.get_edge_length(node_key, k2) * (1 - p)
-                else:
-                    assert False
+        # We are interested in the delivery of the bag only to our stock, so we
+        # need to remove the rest of the stocks
+        # We also need to remove nodes from which we cannot get into an
+        # absorbing state
+        for node in list(network):
+            if chain.has_node(node) and node != self.sink:
+                d = list(nx.descendants(chain, node))
+                if self.sink in d:
+                    continue
+
+                #if we cannot get into the drain from the node, then we cannot
+                #get there from the children of the node 
+                chain.remove_nodes_from(d + [node])
+
+        # нам нужно удалить узлы, в которые мы не попадаем из истока, чтобы
+        # убрать лишние дивертеры? Может достаточно прикрепить список
+        # параметров к формуле?
+        # тут код
+
+        #chain.remove_nodes_from([('source', 0), ('diverter', 0)])
+
+        #if True:
+        #    nx.draw(chain, with_labels=True)
+        #    plt.savefig("filename.png")
+        if True:#verbose:
+            fig = plt.figure()
+            pos = graphviz_layout(chain, prog="dot")
+
+            edge_labels = nx.get_edge_attributes(chain, 'length')
+            nx.draw_networkx_edge_labels(chain, pos, edge_labels)
+
+            nx.draw(chain, pos, with_labels=True)
+            fig.savefig(f"filename{self.sink}.png")
+            fig.show()
+
+        self.chain = chain
+
+    def __find_edt_sol(self):
+        """Find a solution to the problem of finding the expected delivery time
+        of a bag 
+        """
+        ## drop absorbing state
+
+        #chain.remove_node(sink)
+#
+
+        import itertools
+
+        nodes = list(self.chain)
+        #nodes = [(0, key) for key in nodes if key[0] == "source"] \
+        #               + [(2, key) for key in nodes if key[0] == "sink"] \
+        #               + [(1, key) for key in nodes if key[0] not in ["source", "sink"]]
+        #nodes = [x[1] for x in sorted(nodes)]
+
+        self.node_to_id = dict(zip(nodes, itertools.count()))
+
+        # find nontrivial diverters
+
+        # we can use P insead Q для удобства
+
+        # h = (I - P)^-1 * 1
+        # let h = x, 1 = b, then (I - P)x = b
+
+        P = zeros(self.chain.number_of_nodes())
+        b = ones(P.rows, 1)
+        I = eye(P.rows)
+        self.params = []
+        self.nontrivial_diverters = []
+
+        for node in self.chain:
+            nid = self.node_to_id[node]
+            nbrs = list(self.chain.successors(node))
+            nbr_ids = [self.node_to_id[nbr] for nbr in nbrs]
+
+            if len(nbrs) == 2:
+                self.nontrivial_diverters.append(node)
+
+                p = sym.symbols(f'p{node[1]}')
+                self.params.append(p)
+
+                P[nid, nbr_ids[0]] = p
+                P[nid, nbr_ids[1]] = 1 - p
+
+                if not self.simple_path_cost:
+                    f, s = [self.chain[node][nbr]['length'] for nbr in nbrs]
+                    b[nid] = f * p + s * (1 - p)
+            elif len(nbrs) == 1:
+                P[nid, nbr_ids[0]] = 1
+
+                if not self.simple_path_cost:
+                    b[nid] = self.chain[node][nbrs[0]]['length']
+            elif len(nbrs) == 0:
+                # поглощающее состояние
+                b[nid] = 0
+                assert node == self.sink
             else:
+                # cann't be more then 2 neighbors
                 assert False
-        matrix = sympy.Matrix(matrix)
-        bias = sympy.Matrix(bias)
-        self.solution = matrix.inv() @ bias
-        if verbose:
-            #print(f"  matrix: {matrix}")
-            print(f"  bias: {bias}")
-            #print(f"  solution: {self.solution}")
-        
-    def get_objective(self) -> Tuple[sympy.Expr, Callable]:
+
+        #print(I - P)
+        #print(b)
+        #self.solution = (I - P).inv() @ b
+        self.solution, = linsolve(((I - P), b))
+        #print(self.solution)
+
+    def get_edt_sol(self, source) -> Tuple[sym.Expr, Callable]:
         """
         Computes the expected delivery cost as a function of routing probabilities.
         :return (objective as SymPy expression, objective as Callable).
         """
-        source_index = self.reachable_nodes_to_indices[self.source]
-        symbolic_objective = sympy.simplify(self.solution[source_index])
-        print(f"  E(delivery cost from {self.source} to {self.sink}) = {symbolic_objective}")
-        objective = sympy.lambdify(self.params, symbolic_objective)
+        source_index = self.node_to_id[source]
+
+        #source_index = self.reachable_nodes_to_indices[self.source]
+        symbolic_objective = sym.simplify(self.solution[source_index])
+        print(f"  E(delivery cost from {source} to {self.sink}) = {symbolic_objective}")
+        objective = sym.lambdify(self.params, symbolic_objective)
         return symbolic_objective, objective

@@ -13,7 +13,7 @@ def run(command: str, directory: str, config_file_graph: str, config_file_settin
     """
     run_str = (f"ipython Run.py -- ../launches/{directory}/{config_file_graph}.yaml "
                f"../launches/{directory}/{config_file_settings}.yaml --command {command} "
-               f"--cost_bound {cost_bound} --marabou_path ../../Marabou/build/Marabou {more_args}")
+               f"--cost_bound {cost_bound} --marabou_path /home/vanya/build/Marabou/build/Marabou {more_args}")
     print(f"Running: {run_str}")
     start_time = time.time()
     os.system(run_str)

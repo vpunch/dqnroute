@@ -37,6 +37,8 @@ from dqnroute.verification.symbolic_analyzer import SymbolicAnalyzer, LipschitzB
 from dqnroute.verification.nnet_verifier import NNetVerifier, marabou_float2str
 from dqnroute.verification.embedding_packer import EmbeddingPacker
 
+from dqnroute.verification import commands as verif_cmds
+
 NETWORK_FILENAME = "../network.nnet"
 PROPERTY_FILENAME = "../property.txt"
 
@@ -448,10 +450,11 @@ if dqn_emb_exists:
 
     # dqn_combined_model_results, _ = dqn_experiments(1, True, True, True, False, True)
     dqn_single_model_results, dqn_single_model_worlds = dqn_experiments(1, False, True, True, False, True)
+    #dqn_single_model_results, dqn_single_model_worlds = dqn_experiments(1, False, True, True, False, False)
 
     g = RouterGraph(dqn_single_model_worlds[0])  # todo FIX
     print("Reachability matrix:")
-    g.print_reachability_matrix()
+    #g.print_reachability_matrix()
 
 
 # PPO part (pre-train + train)
@@ -1000,7 +1003,7 @@ def get_source_sink_pairs(message: str, ma_verbose: bool = False) -> \
         sink_embeddings = sink_embedding.repeat(2, 1)
         for source in get_sources(sink):
             print(f"{message} from {source} to {sink}...")
-            ma = MarkovAnalyzer(g, source, sink, args.simple_path_cost, ma_verbose)
+            ma = MarkovAnalyzer(g.graph, sink, args.simple_path_cost, ma_verbose)
             yield source, sink, sink_embedding, ma
 
 
@@ -1158,7 +1161,7 @@ if args.command == "run":
 elif args.command == "compute_expected_cost":
     sa = get_symbolic_analyzer()
     for source, sink, sink_embedding, ma in get_source_sink_pairs("Delivery", True):
-        _, lambdified_objective = ma.get_objective()
+        _, lambdified_objective = ma.get_edt_sol(source)
         ps = sa.compute_ps(ma, sink, sink_embedding.repeat(2, 1), 0, 0)
         objective_value = lambdified_objective(*ps)
         print(f"  Computed probabilities: {Util.list_round(ps, 6)}")
@@ -1175,8 +1178,12 @@ elif args.command == "embedding_adversarial_search":
     print(f"Trying to falsify ({norm}_norm(Δembedding) ≤ {norm_bound}) => (E(cost) < {args.cost_bound}).")
     for source, sink, sink_embedding, ma in get_source_sink_pairs("Measuring adversarial robustness of delivery"):
         # gather all embeddings that we need to compute the objective
-        embedding_packer = EmbeddingPacker(g, sink, sink_embedding, ma.reachable_nodes)
-        _, lambdified_objective = ma.get_objective()
+        #embedding_packer = EmbeddingPacker(g, sink, sink_embedding, ma.reachable_nodes)
+        embedding_packer = EmbeddingPacker(g, sink, sink_embedding,
+                list(ma.chain))
+        _, lambdified_objective = ma.get_edt_sol(source)
+        print('HERE')
+        print(_)
 
 
         def get_gradient(x: torch.Tensor) -> Tuple[torch.Tensor, float, str]:
@@ -1190,6 +1197,8 @@ elif args.command == "embedding_adversarial_search":
             objective_value, objective_inputs = embedding_packer.compute_objective(
                 embedding_packer.unpack(x), ma.nontrivial_diverters, lambdified_objective,
                 softmax_temperature, probability_smoothing)
+            #print('OBJECTIVE_VALUE')
+            #print(objective_value)
             objective_value.backward()
             aux_info = ", ".join([f"{param}={value.detach().cpu().item():.4f}"
                                   for param, value in zip(ma.params, objective_inputs)])
@@ -1209,6 +1218,15 @@ elif args.command == "embedding_adversarial_verification":
         result = nv.verify_delivery_cost_bound(source, sink, ma, args.input_eps_l_inf, args.cost_bound)
         print(f"  {result}")
 
+
+
+elif args.command == "full_embedding_adversarial_verification":
+    verifier = get_nnet_verifier()
+    getattr(verif_cmds, args.command)(verifier, dqn_single_model_worlds[0], args.simple_path_cost,
+            False, args.input_eps_l_inf, args.cost_bound, softmax_temperature, probability_smoothing)
+
+
+
 # Evaluate the expected delivery cost assuming a change in NN parameters and make plots            
 elif args.command == "q_adversarial_search":
     sa = get_symbolic_analyzer()
@@ -1216,7 +1234,7 @@ elif args.command == "q_adversarial_search":
     requested_indices = get_learning_step_indices()
     for source, sink, sink_embedding, ma in get_source_sink_pairs("Measuring robustness of delivery"):
         sink_embeddings = sink_embedding.repeat(2, 1)
-        objective, lambdified_objective = ma.get_objective()
+        objective, lambdified_objective = ma.get_edt_sol(source)
         for node_key in g.node_keys:
             current_embedding, neighbors, neighbor_embeddings = g.node_to_embeddings(node_key, sink)
             for neighbor_key, neighbor_embedding in zip(neighbors, neighbor_embeddings):
@@ -1268,7 +1286,7 @@ elif args.command == "q_adversarial_verification":
     learning_step_index = -1
     requested_indices = get_learning_step_indices()
     for source, sink, sink_embedding, ma in get_source_sink_pairs("Verifying robustness of delivery"):
-        objective, _ = ma.get_objective()
+        objective, _ = ma.get_edt_sol(source)
         for node_key in g.node_keys:
             current_embedding, neighbors, neighbor_embeddings = g.node_to_embeddings(node_key, sink)
             for neighbor_key, neighbor_embedding in zip(neighbors, neighbor_embeddings):

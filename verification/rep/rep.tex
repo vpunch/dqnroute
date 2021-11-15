@@ -1,0 +1,24 @@
+\documentclass[11pt, a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern} 
+\usepackage{diagbox}
+
+\begin{document}
+
+$1 \to 2$
+\begin{table}\centering\setlength\tabcolsep{3.5pt}\renewcommand\arraystretch{1.25}
+  \noindent\makebox[\textwidth]{%
+    \begin{tabular}{|r|rr|rr|}
+      \hline
+      \diagbox[width=\dimexpr \textwidth/8+2\tabcolsep\relax, height=1cm]{ $t_b$ }{$\epsilon$ $t_m$}
+                   & 0.01 & 42 & 0.1 & 55 \\
+      \hline
+        41 & 3 & + & 4 & +\\
+      41 & 3 & + & 4 & +\\
+      \hline
+    \end{tabular}
+  }%
+\end{table}
+
+\end{document} 

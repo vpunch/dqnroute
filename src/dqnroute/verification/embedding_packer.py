@@ -109,4 +109,7 @@ class EmbeddingPacker:
                                              for current_neighbor in current_neighbors])
             q_values = self._g.q_forward(diverter_embeddings, sink_embeddings, neighbor_embeddings).flatten()
             ps += [Util.q_values_to_first_probability(q_values, softmax_temperature, probability_smoothing)]
+
+        #print('WHAT?')
+        #print(lambdified_objective(*ps))
         return lambdified_objective(*ps), ps

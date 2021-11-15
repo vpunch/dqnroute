@@ -338,6 +338,7 @@ class NNetVerifier:
         
         for prob_index, diverter_key in enumerate(ma.nontrivial_diverters):
             _, neighbors, _ = self.g.node_to_embeddings(diverter_key, sink)
+            #neighbors = list(ma.chain.successors(diverter_key)
                 
             # fill the next (emb_dim * 3) rows of the matrix
             #   fill with I for the sink and neighbors
@@ -396,10 +397,11 @@ class NNetVerifier:
         :return: VerificationResult (Verified or a Counterexample).
         """
         sink_embedding, _, _ = self.g.node_to_embeddings(sink, sink)
-        self.objective, self.lambdified_objective = ma.get_objective()
+        self.objective, self.lambdified_objective = ma.get_edt_sol(source)
 
         # gather all embeddings that we need to compute the objective:
-        self.embedding_packer = EmbeddingPacker(self.g, sink, sink_embedding, ma.reachable_nodes)
+        self.embedding_packer = EmbeddingPacker(self.g, sink, sink_embedding,
+                list(ma.chain))
         # pack the default embeddings, the input center for robustness verification:
         self.emb_center = self.embedding_packer.initial_vector()
         
