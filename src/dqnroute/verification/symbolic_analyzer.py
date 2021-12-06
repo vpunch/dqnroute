@@ -163,7 +163,7 @@ class SymbolicAnalyzer:
         """
         ps = []
         self._gd_step(predicted_q, actual_q, False)
-        for diverter in ma.nontrivial_diverters:
+        for diverter in ma.nontrivial_dvtrs:
             diverter_embedding, current_neighbors, neighbor_embeddings = self.g.node_to_embeddings(diverter, sink)
             diverter_embeddings = diverter_embedding.repeat(2, 1)
             neighbor_embeddings = torch.cat(neighbor_embeddings, dim=0)
@@ -500,7 +500,7 @@ class LipschitzBoundComputer:
         
         #  compute a pool of bounds
         derivative_bounds = {}
-        for param, diverter_key in zip(self.ma.params, self.ma.nontrivial_diverters):
+        for param, diverter_key in zip(self.ma.params, self.ma.nontrivial_dvtrs):
             _, current_neighbors, _ = self.sa.g.node_to_embeddings(diverter_key, self.sink)
             print(f"    Computing the logit and its derivative for {param} ="
                   f" P({diverter_key} → {current_neighbors[0]} | sink = {self.sink})....")

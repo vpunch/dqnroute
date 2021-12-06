@@ -2,23 +2,129 @@
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern} 
-\usepackage{diagbox}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{float}
+\usepackage[tableposition=top]{caption}
+\usepackage{subcaption}
+
+
+
+\newcommand{\sprule}{\rule{0pt}{1.3em}}
+
+\newcommand{\fig}[3][1]{
+    \begin{figure}[H]
+	\centering
+	\includegraphics[width=#1\textwidth]{#2}
+	\caption{#3}
+    \end{figure}
+}
+
 
 \begin{document}
 
-$1 \to 2$
-\begin{table}\centering\setlength\tabcolsep{3.5pt}\renewcommand\arraystretch{1.25}
-  \noindent\makebox[\textwidth]{%
-    \begin{tabular}{|r|rr|rr|}
-      \hline
-      \diagbox[width=\dimexpr \textwidth/8+2\tabcolsep\relax, height=1cm]{ $t_b$ }{$\epsilon$ $t_m$}
-                   & 0.01 & 42 & 0.1 & 55 \\
-      \hline
-        41 & 3 & + & 4 & +\\
-      41 & 3 & + & 4 & +\\
-      \hline
-    \end{tabular}
-  }%
-\end{table}
+\fig[0.8]{d7.png}{AMC (Absorbing Markov chain) for sink $d_7$}
+\fig[0.8]{d8.png}{AMC for sink $d_8$}
+\fig[0.8]{i0.png}{AMC for sink $i_0$}
+\fig[0.8]{i1.png}{AMC for sink $i_1$}
+\fig[0.8]{i2.png}{AMC for sink $i_2$}
+\fig[0.8]{i3.png}{AMC for sink $i_3$}
+\fig[0.8]{j0.png}{AMC for sink $j_0$}
+
+\begin{longtable}{rrrcr}
+\caption{Verification results}\\
+    \toprule
+    & $t_{\top}$ & $t_b$ & \thead{Res.} & Dur. \\
+    &         &       &              & (s) \\
+    \midrule
+    $o_1 \to d_7$ & 40.10 & 38.10 & $-$ & 0.09 \\
+              &       & 39.70 & $-$ & 0.19 \\
+              &       & 40.50 & $+$ & 0.78 \\
+              &       & 42.11 & $+$ & 0.52 \\
+	\sprule
+    $o_1 \to d_8$ & 50.10 & 47.60 & $-$ & 0.09 \\
+              &       & 49.60 & $-$ & 0.11 \\
+              &       & 50.60 & $+$ & 0.74 \\
+              &       & 52.61 & $+$ & 0.34 \\
+	\sprule
+    $o_1 \to i_0$ & 50.15 & 47.64 & $-$ & 0.09 \\
+              &       & 49.65 & $-$ & 0.11 \\
+              &       & 50.65 & $+$ & 0.77 \\
+              &       & 52.66 & $+$ & 0.53 \\
+    \sprule
+    $o_0 \to i_0$ & 40.20 & 38.19 & $-$ & 0.10 \\
+              &       & 39.80 & $-$ & 0.12 \\
+              &       & 40.60 & $+$ & 0.94 \\
+              &       & 42.21 & $+$ & 0.66 \\
+	\newpage
+    \sprule
+    $o_0 \to i_1$ & 53.10 & 50.45 & $-$ & 0.11 \\
+              &       & 52.57 & $-$ & 0.11 \\
+              &       & 53.63 & $+$ & 0.76 \\
+              &       & 55.76 & $+$ & 0.41 \\
+    \sprule
+    $o_1 \to i_1$ & 43.25 & 41.09 & $-$ & 0.15 \\
+              &       & 42.82 & $-$ & 0.17 \\
+              &       & 43.68 & $+$ & 2.85 \\
+              &       & 45.41 & $+$ & 1.80 \\
+    \sprule
+    $o_1 \to i_2$ & 53.06 & 50.41 & $-$ & 0.12 \\
+              &       & 52.53 & $-$ & 0.16 \\
+              &       & 53.59 & $+$ & 4.54 \\
+              &       & 55.71 & $+$ & 1.64 \\
+    \sprule
+    $o_0 \to i_2$ & 53.07 & 50.42 & $-$ & 0.09 \\
+              &       & 52.54 & $-$ & 0.11 \\
+              &       & 53.60 & $+$ & 0.63 \\
+              &       & 55.72 & $+$ & 0.28 \\
+    \sprule
+    $o_1 \to i_3$ & 43.10 & 40.95 & $-$ & 0.14 \\
+              &       & 42.67 & $-$ & 0.17 \\
+              &       & 43.53 & $+$ & 2.27 \\
+              &       & 45.26 & $+$ & 1.45 \\
+    \sprule
+    $o_0 \to i_3$ & 43.15 & 40.99 & $-$ & 0.10 \\
+              &       & 42.72 & $-$ & 0.11 \\
+              &       & 43.58 & $+$ & 0.91 \\
+              &       & 45.31 & $+$ & 0.54 \\
+    \sprule
+    $d_3 \to i_3$ & 43.10 & 40.95 & $-$ & 0.10 \\
+              &       & 42.67 & $-$ & 0.12 \\
+              &       & 43.53 & $+$ & 0.82 \\
+              &       & 45.26 & $+$ & 0.56 \\
+	\sprule
+	$o_1 \to j_0$ & 30.10 & 28.60 & $-$ & 0.09 \\
+              &       & 29.80 & $-$ & 0.11 \\
+              &       & 30.40 & $+$ & 0.89 \\
+              &       & 31.61 & $+$ & 0.52 \\
+	\bottomrule
+\end{longtable}
+
+Trivial pairs (there is only one path): ($o_0$, $d_0$), ($o_1$, $d_2$),
+($o_0$, $j_3$),
+($o_0$, $j_4$),
+($o_1$, $d_3$),
+($o_1$, $j_4$),
+($o_0$, $d_1$),
+($o_0$, $j_1$),
+($o_1$, $j_3$),
+($o_1$, $j_1$), ...
+
+Included pairs (the shortest path is part of the shortest path of another
+pair):
+($d_0$, $j_3$),
+($d_0$, $j_4$),
+($d_2$, $d_3$),
+($d_2$, $j_4$),
+($d_0$, $d_1$),
+($d_0$, $j_1$),
+($d_2$, $j_3$),
+($d_3$, $j_3$),
+($d_2$, $j_0$),
+($d_3$, $j_0$),
+($d_2$, $j_1$),
+($d_0$, $i_0$), ...
 
 \end{document} 

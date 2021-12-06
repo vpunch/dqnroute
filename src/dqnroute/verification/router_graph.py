@@ -1,388 +1,159 @@
-from typing import *
-
 import numpy as np
-import torch
+import torch as tch
+import networkx as nx
+import pygraphviz
 
 from ..utils import AgentId
 from ..simulation.conveyors import ConveyorsEnvironment
 
-from .ml_util import Util
 
-import networkx as nx
+class Network:
+    """Wrap of the conveyor network to make the interface more stable"""
 
-class RouterGraph:
-    """
-    Clear graph representation of the conveyor network.
-    """
-
-    def __init__(self, world: ConveyorsEnvironment, node_sink=None):
-        """
-        Constructs RouterGraph based on the description of the conveyor network,
-        including the one of the agents. Works only for DQNRoute-LE and requires that
-        all the agents use the same neural network.
-        :param world: ConveyorsEnvironment.
-        """
-        # 1. explore
+    def __init__(self, world: ConveyorsEnvironment, verbose: bool) -> None:
         self.world = world
-        self.graph = world.topology_graph
-        self.routers = world.handlers
-        #print('routers')
-        #print(self.routers)
-        #print('router_keeper?')
-        #for item in self.routers.items():
-        #    print('routers of keeper')
-        #    print(item[0])
-        #    print(item[1])
-        #    print(item[1].routers)
 
+        self.__check_embeddings()
 
-        self.check_embeddings()
-        
-        # add source/diverter/sink -> router mapping
-        self.node_to_router = {}
-        for node_key, router_keeper in self.routers.items():
-            for router_key, router in router_keeper.routers.items():
-                self.node_to_router[node_key] = router_key
-                self.q_network = router.brain
-                self.node_repr = router._nodeRepr
-                nw = router.network
+        # Store clear graph
+        graph = nx.DiGraph()
+        graph.add_edges_from(world.topology_graph.edges)
+        self.graph = graph
 
-                #if node_sink is not None:
-                #    edges = list(nw.edges(node_sink))
-                #    nw.remove_edges_from(edges)
+        # Store mapping source/sink/junction/diverter id -> router id
 
-        self.q_network.ff_net = Util.conditional_to_cuda(self.q_network.ff_net)
-        
-        # add junction -> router mapping
-        for conveyor_index, m in world.conveyor_models.items():
-            router_keeper = self.routers[("conveyor", conveyor_index)].routers
-            router_keys = router_keeper.keys()
-            junction_keys = [cp_index for cp_index, cp in m.checkpoints if cp_index[0] == "junction"]
-            for router_key, junction_key in zip(router_keys, junction_keys):
-                self.node_to_router[junction_key] = router_key
+        abct_router = world.handlers.items()[0][1]  # abstract router
 
-        #print('node_to_router')
-        #print(self.node_to_router)
-        #{('sink', 0): ('router', 14), ..., ('diverter', 0): ('router', 0), ...
+        self.map_router_id = abct_router.node_mapping
 
-        #self.router_to_node = {v: k for k, v in self.node_to_router.items()}
-        #print(sorted([(self.router_to_node[from_node], self.router_to_node[to_node]) for from_node, to_node in nw.edges()]))
-        
-        # increase analysis precision:
-        self.q_network = self.q_network.double()
-        
-        # 2. load nodes and sort them
-        self.node_keys: List[AgentId] = list(self.graph.nodes)
-        self.node_keys = [(0, key) for key in self.node_keys if key[0] == "source"] \
-                       + [(2, key) for key in self.node_keys if key[0] == "sink"] \
-                       + [(1, key) for key in self.node_keys if key[0] not in ["source", "sink"]]
-        self.node_keys = [x[1] for x in sorted(self.node_keys)]
-        #print(self.node_keys)
-        #[('source', 0), ('source', 1), ('diverter', 0), ('diverter', 1),
+        # Store neural network and node encoding method
 
-        print(f"Graph size = {len(self.node_keys)}")
-        self.node_keys_to_indices = {key: i for i, key in enumerate(self.node_keys)}
-        self.indices_to_node_keys = {i: key for i, key in enumerate(self.node_keys)}
- 
-        # 3. list of nodes of particular types
-        nodes_of_type = lambda s: [node_key for node_key in self.node_keys if node_key[0] == s]
-        self.sources = nodes_of_type("source")
-        self.sinks = nodes_of_type("sink")
+        router = abct_router.routers.items()[0][1]
+        # We need to increase analysis precision
+        self.q_net = router.brain.double()
+        self._idx_enc_method = router._nodeRepr
 
+        self.reachable = self.__get_reachability_matrix()
 
-        #self.sinks.append(sink)
+    def get_node_num(node: AgentId) -> int:
+        """Get absolute index for the node (node number)"""
 
+        return self.map_router_id(node)[1]
 
-        self.diverters = nodes_of_type("diverter")
-        
-        # 4. find edge lengths from junctions and diverter-routers 
+    def get_section_len(f: AgentId, s: AgentId) -> int:
+        return self.world.topology_graph[f][s]['length']
 
-        self.conveyor_models: dict = world.conveyor_models
+    def get_conv_idx(f: AgentId, s: AgentId) -> int:
+        return self.world.topology_graph[f][s]['conveyor']
 
-        self._agent_id_to_edge_lengths = {}
-        self._node_to_conveyor_ids = {node_key: set() for node_key in self.node_keys}
-
-        for source_key in self.sources:
-            self._node_to_conveyor_ids[source_key].add(world.layout["sources"][source_key[1]]["upstream_conv"])
-            #print(world.layout['sources'])
-
-        self.junctions = set()
-        
-        for conveyor_index, m in self.conveyor_models.items():
-            checkpoints = m.checkpoints
-            #print('HELLO')
-            #print(checkpoints)
-            for cp_index, cp in enumerate(checkpoints):
-                self._node_to_conveyor_ids[cp[0]].add(conveyor_index)
-            
-            # attribute a sink to this conveyor, if any:
-            upstream = world.layout["conveyors"][conveyor_index]["upstream"]
-            #print(upstream)
-            if upstream["type"] == "sink":
-                self._node_to_conveyor_ids[("sink", upstream["idx"])].add(conveyor_index)
-            
-            # add source in the beginning, if any:
-            for source_index, source_dict in world.layout["sources"].items():
-                if source_dict["upstream_conv"] == conveyor_index:
-                    checkpoints = [(("source", source_index), 0)] + checkpoints
-                    break
-                    
-            # add diverter in the beginning, if any:
-            for diverter_index, diverter_dict in world.layout["diverters"].items():
-                if diverter_dict["upstream_conv"] == conveyor_index:
-                    #print('DIV_DICT')
-                    #print(diverter_dict)
-                    self._node_to_conveyor_ids[("diverter", diverter_index)].add(conveyor_index)
-                    checkpoints = [(("sourcing_diverter", diverter_index), 0)] + checkpoints
-                    break
-                    
-            print(f"conveyor {conveyor_index}: {checkpoints}, length = {m.length}")
-            
-            for cp_index, cp in enumerate(checkpoints):
-                checkpoint_node_key = cp[0]
-                if checkpoint_node_key[0] == "junction":
-                    self.junctions.add(checkpoint_node_key)
-                position = cp[1]
-
-                if cp_index < len(checkpoints) - 1:
-                    next_position = checkpoints[cp_index + 1][1]
-                else:
-                    next_position = m.length
-
-                edge_len = next_position - position
-                assert edge_len > 0
-
-                if checkpoint_node_key[0] in ["junction", "source", "diverter", "sourcing_diverter"]:
-                    self._agent_id_to_edge_lengths[checkpoint_node_key] = edge_len
-                    continue
-
-                for node_key, router_keeper in self.routers.items():
-                    if node_key == checkpoint_node_key:
-                        routers = list(router_keeper.routers.items())
-                        assert len(routers) == 1
-                        router = routers[0]
-                        self._agent_id_to_edge_lengths[router[0]] = edge_len
-                        break
-                        
-        self.junctions = list(self.junctions)
-        
-        # add junctions also to the conveyors that they end
-        for conveyor_index in self.conveyor_models.keys():
-            upstream = world.layout["conveyors"][conveyor_index]["upstream"]
-            if upstream["type"] == "conveyor":
-                upstream_conv: int = upstream["idx"]
-                upstream_pos: int = upstream["pos"]
-                junctions = [junction for junction, pos in self.conveyor_models[upstream_conv].checkpoints
-                             if pos == upstream_pos]
-                assert len(junctions) == 1
-                junction = junctions[0]
-                self._node_to_conveyor_ids[junction].add(conveyor_index)
-        
-        # check that our node->router mapping does not violate the (reliable) networkx network
-        our_router_edges = sorted([
-            (self.node_to_router[from_node], self.node_to_router[to_node])
-            for from_node in self.node_keys for to_node in self.get_out_nodes(from_node)
-        ])
-        assert our_router_edges == sorted(nw.edges()), f"{our_router_edges} != {sorted(nw.edges())}"
-        #print("Edges between routers:", nw.edges())
-
-        for node in self.graph:
-            for l, r in self.graph.edges(node):
-                self.graph[l][r]['length'] = self.get_edge_length(l, r)
-
-
-        #if node_sink is not None:
-        #    edges = list(nw.edges(node_sink))
-        #    nw.remove_edges_from(edges)
-        
-        self.reachable = self._get_reachability_matrix()
-
-        
-
-    def check_embeddings(self):
-        # Каждый роутер должен считать эмбеддинги одинаково
+    def get_neighbors(self, node: AgentId) -> list[AgentId]:
+        """Get the nodes that follow the specified node. For a diverter,
+        the node that belongs to the same conveyor will be returned
+        first.
         """
-        Check that the embeddings are consistent between nodes.
-        """
-        no_routers = sum([len(r.routers) for _, r in self.routers.items()])
-        embeddings = []
-        for _, router_keeper in self.routers.items():
-            for _, router in router_keeper.routers.items():                
-                embeddings += [np.concatenate([router.embedding.transform(i) for i in range(no_routers)])]
-        
-        for i in range(len(embeddings)):
-            for j in range(i + 1, len(embeddings)):
-                diff = np.abs(embeddings[i] - embeddings[j])
-                if diff.max() > 0.01:
-                    for embedding in embeddings:
-                        print(list(embedding.round(4)))
-                    print(list(diff.round(4)))
-                    raise RuntimeError("Embeddings are inconsistent between nodes! This may be caused "
-                                       "by the nondeterminism in computing embeddings.")
-    
-    def get_conveyor_of_edge(self, from_node: AgentId, to_node: AgentId) -> int:
-        """
-        Finds the index of the conveyor whose section is between the given node. It is assumed
-        that there is exactly one such conveyor section.
-        :param from_node: first node.
-        :param to_node: second node.
-        :return: the index of the conveyor whose section is between from_node and to_node.
-        """
-        c_from = self._node_to_conveyor_ids[from_node]
-        c_to = self._node_to_conveyor_ids[to_node]
-        intersection = list(c_from.intersection(c_to))
-        assert len(intersection) > 0
-        assert len(intersection) == 1, \
-            (f"It appears that there are two nodes {from_node} and {to_node} that are connected "
-             f"by more than one conveyor section. Such situations may be possible when there is "
-             f"a conveyor that starts and ends at the same other conveyor, but these situation "
-             f"are not supported. A possible way to proceed is to split that diverging/converging "
-             f"conveyor into two with an artificial single-input junction.")
-        return intersection[0]
 
+        out_edges = list(self.graph.out_edges(node))
+        assert len(out_edges) <= 2,\
+               'A node cannot have more then two neighbors'
 
-    def to_graphviz(self) -> "pygraphviz.AGraph":
+        # If the node represents a diverter
+        if len(out_edges) == 2:
+            in_edges = list(self.graph.in_edges(node))
+            assert len(in_edges) == 1, 'Diverter cannot be junction'
+
+            conv_idx = self.get_conv_idx(*in_edges[0])
+            out_edges.sort(
+                    key=lambda edge: abs(self.get_conv_idx(*edge) - conv_idx))
+
+        return [edge[1] for edge in out_edges]
+
+    def get_node_emb(self, node: AgentId) -> np.ndarray:
+        return self._idx_enc_method(self.get_node_num(node))
+
+    def get_nebr_embs(self, node: AgentId) -> list[np.ndarray]:
+        """Get embeddings of all neighbors of the specified node"""
+
+        nebrs = self.get_neighbors(node)
+        return [self.get_node_emb(node) for node in nebrs]
+
+    def get_nodes_with_type(self, ntype: str) -> list[AgentId]:
+        """Return identifiers of nodes that have the specified type"""
+
+        return [node for node in list(self.graph) if node[0] == ntype]
+
+    def print(self, name, graph=None) -> pygraphviz.AGraph:
+        """Save network image to file"""
+
+        if graph is None:
+            graph = self.graph
+
+        agraph = nx.drawing.nx_agraph.to_agraph(graph)
+
+        A.node_attr.update({'shape':     'box',
+                            'style':     'filled',
+                            'fixedsize': True,
+                            'width':     0.9,
+                            'height':    0.7})
+
+        node_bg = {'source':   '#8888FF',
+                   'sink':     '#88FF88',
+                   'diverter': '#FF9999',
+                   'junction': '#EEEEEE'}
+
+        for node in graph:
+            anode = agraph.get_node(n)
+            anode.attr.update({'fillcolor': node_bg[node[0]],
+                               'label':     f'{node[0]} {node[1]}'})
+
+        for f, s in graph.edges:
+            aedge = agraph.get_edge(f, s)
+            aedge.attr['label'] = f'{self.get_section_len(f, s)}, '\
+                                  f'c{self.get_conv_idx(f, s)}'
+
+        if self.verbose:
+            print(agraph)
+
+        agraph.draw(f'{name}.png', prog='dot')
+
+    def calc_q_vals(self,
+                    dembs: tch.Tensor,  # diverter embeddings
+                    nembs: tch.Tensor,  # neighbours
+                    # Sink
+                    iembs: tch.Tensor) -> tch.Tensor:
+        return self.q_net.forward(dembs, iembs, nembs)
+
+    def __check_embeddings(self):
+        """Check that all routers return the same embeddings for the
+        corresponding nodes
         """
-        :return: Graphviz representation of the graph.
-        """
-        import pygraphviz
-        gv_graph = pygraphviz.AGraph(directed=True)
-        fill_colors = dict(source="#8888FF", sink="#88FF88", diverter="#FF9999", junction="#EEEEEE")
-        
-        for i, node_key in self.indices_to_node_keys.items():
-            gv_graph.add_node(i)
-            n = gv_graph.get_node(i)
-            
-            r = self.node_to_router[node_key]
-            label = f"{node_key[0]} {node_key[1]}\n{r[0]} {r[1]}"
-            conveyor_ids = self._node_to_conveyor_ids[node_key]
-            conveyor_ids = ", ".join(sorted([f"c{i}" for i in conveyor_ids]))
-            label = f"{label}\n[{conveyor_ids}]"
 
-            for k, v in {"shape": "box", "style": "filled", "fixedsize": "true", "width": "0.9",
-                         "height": "0.7", "fillcolor": fill_colors[node_key[0]], "label": label}.items():
-                n.attr[k] = v
-        
-        #for from_node in self.node_keys:
-        #    print(f"{from_node} → {self.get_out_nodes(from_node)}")
-        
-        for from_node in self.node_keys:
-            i1 = self.node_keys_to_indices[from_node]
-            for to_node in self.get_out_nodes(from_node):
-                i2 = self.node_keys_to_indices[to_node]
-                gv_graph.add_edge(i1, i2)
-                e = gv_graph.get_edge(i1, i2)
-                c = self.get_conveyor_of_edge(from_node, to_node)
-                e.attr["label"] = f"{self.get_edge_length(from_node, to_node)} [c{c}]"
-        return gv_graph
-    
-    def q_forward(self, current_embedding: torch.Tensor, sink_embedding: torch.Tensor,
-                  neighbor_embedding: torch.Tensor) -> torch.Tensor:
-        """
-        Executes the neural network stored in the graph.
-        :param current_embedding: embedding of the current node.
-        :param sink_embedding: embedding of the sink.
-        :param neighbor_embedding: embedding of the chosen successor of the current node.
-        :return: QNetwork output on the given node embeddings.
-        """
-        return self.q_network.forward(current_embedding, sink_embedding, neighbor_embedding)
-    
-    def _get_reachability_matrix(self, verbose=True):
-        reachable = {(k1, k2): k1 == k2 for k1 in self.node_keys
-                                        for k2 in self.node_keys}
+        embs = []
+        for _, abct_router in self.world.handlers.items():
+            for _, router in abct_router.routers.items():
+                emb = np.concatenate([router._nodeRepr(i)
+                                      for i in range(len(self.graph))])
+                embs.append(emb)
 
-        for node_key in self.node_keys:
-            for d in list(nx.descendants(self.graph, node_key)):
-                reachable[node_key, d] = True
+        for i in range(len(embs)):
+            for j in range(i+1, len(embs)):
+                assert np.abs(emb[i] - emb[j]).max() == 0,\
+                       'The embeddings of the same node are different. This '\
+                       'may be caused by the nondeterminism in embeddings '\
+                       'computing.'
 
-        if verbose:
-            for k1 in self.node_keys:
-                for k2 in self.node_keys:
-                    print(int(reachable[k1, k2]), end=" ")
+    def __get_reachability_matrix(self):
+        nodes = sorted(self.graph)
+        reachable = {(f, s): f == s for f in nodes for s in nodes}
 
-                print(k1)
+        for node in nodes:
+            for d in list(nx.descendants(self.graph, node)):
+                reachable[node, d] = True
+
+        if self.verbose:
+            for f in nodes:
+                for s in nodes:
+                    print(int(reachable[f, s]), end=" ")
+
+                print(f)
 
         return reachable
-
-    def get_edge_length(self, from_node_key: AgentId, to_node_key: AgentId) -> float:
-        """
-        Get the length of the edge between two nodes. It is required that this edge is unique.
-        :param from_node_key: first node.
-        :param to_node_key: second node.
-        :return: length of the conveyor section between from_node_key and to_node_key.
-        """
-        # Igor: the implementation of this method is not very clear.
-        node_key = from_node_key
-
-        if from_node_key[0] == "diverter":
-            upstream_conv = self.world.layout["diverters"][from_node_key[1]]["upstream_conv"]
-            #print(upstream_conv, self._node_to_conveyor_ids[to_node_key])
-            if upstream_conv in self._node_to_conveyor_ids[to_node_key]:
-                node_key = "sourcing_diverter", from_node_key[1]
-        #print(from_node_key, to_node_key, "->", node_key)
-
-        return self._agent_id_to_edge_lengths[node_key]
-        
-    def get_out_nodes(self, node_key: AgentId) -> List[AgentId]:
-        """
-        Get the successors of the given node.
-        :param node_key: node to query.
-        :return: the list of successor nodes of node_key. If node_key is a diverter,
-          then the successor nodes will be returned in the following order:
-          [0] the next node along the same conveyor;
-          [1] the next node along the different conveyor.
-        """
-        e = sorted([e[1] for e in self.graph.out_edges(node_key)])
-        if len(e) == 2:
-            current_conv = self.world.layout["diverters"][node_key[1]]["conveyor"]
-            if self.get_conveyor_of_edge(node_key, e[0]) != current_conv:
-                e = e[::-1]
-        return e
-            
-    def get_out_node_indices(self, node_index: int) -> List[int]:
-        """
-        Get the indices of the successors of node with the given index.
-        :param node_index: index of the node to query.
-        :return: the list of the indices of the successor nodes of node_key. Successors are
-            traversed in the order of get_out_nodes().
-        """
-        return [self.node_keys_to_indices[key]
-                for key in self.get_out_nodes(self.indices_to_node_keys[node_index])]
-    
-    def _get_router_embedding(self, router_key: AgentId) -> torch.Tensor:
-        """
-        Get the embedding of the node that corresponds to the given router key. Technically, routers
-        and their nodes correspond to different AgentIds.
-        :param router_key: the node to query.
-        :return: the embedding of router_key.
-        """
-        return Util.conditional_to_cuda(torch.DoubleTensor([self.node_repr(router_key[1])]))
-    
-    def node_to_embeddings(self, current_node: AgentId, sink: AgentId) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        """
-        Get the embedding of the given node, and also the embeddings of its successors from which the given
-        sink is reachable.
-        :param current_node: current node to query.
-        :param sink: the sink to which the delivery is considered.
-        :return: (embedding of current_node,
-                  list of embeddings of current_node's successors from which sink is reachable).
-        """
-        current_router = self.node_to_router[current_node]
-        current_embedding = self._get_router_embedding(current_router)
-        if current_node[0] == "sink":
-            out_nodes = []
-        else:
-            out_nodes = self.get_out_nodes(current_node)
-            # leave only nodes from which the sink is reachable
-            out_nodes = [out_node for out_node in out_nodes if self.reachable[out_node, sink]]
-        out_embeddings = [self._get_router_embedding(self.node_to_router[out_node]) for out_node in out_nodes]
-        return current_embedding, out_nodes, out_embeddings
-    
-    def get_sources_for_node(self, node_key: AgentId) -> List[AgentId]:
-        """
-        Get the sources from which the given node is reachable.
-        :param node_key: node to query.
-        :return: list of sources such that the given node is reachable from them.
-        """
-        #return  self.sources
-        return [source_key for source_key in self.sources if self.reachable[source_key, node_key]]

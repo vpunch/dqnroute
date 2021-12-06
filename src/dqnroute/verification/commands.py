@@ -1,81 +1,86 @@
 import networkx as nx
-from .markov_analyzer import MarkovAnalyzer
-from .router_graph import RouterGraph
 
-from dqnroute.verification.embedding_packer import EmbeddingPacker
-from dqnroute.verification.adversarial import PGDAdversary
+from .markov_chain import absorbing_mc
+from .network import Network
+
+from .edt_solver import EDTSolver
+from .adversarial import PGDAdversary
+
 import torch
 
 from typing import *
-from dqnroute.verification.ml_util import Util
+
+def full_emb_advers_verif(verifier,
+                          graph,
+                          is_spc,
+                          is_verbose,
+                          is_l2,
+                          t_top,
+                          softmax_tre,
+                          prob_smooth):
+
+    def get_pair(graph):
+        # Найти все упорядоченные пары вершин
+        # Порядок важен, так как он влияет на входные данные
+        nodes = list(graph.nodes)
+        #pairs = [(a, b) for a in nodes for b in nodes if a != b]
+
+        # Оставляем старые стоки
+        pairs = [(a, b) for a in nodes for b in nodes if a != b]
+
+        # Найти кратчайшие пути между ними
+        # Кратчайший путь наиболее вероятен при маршрутизации
 
 
-def get_pair(graph):
-    # Найти все упорядоченные пары вершин
-    # Порядок важен, так как он влияет на входные данные
-    nodes = list(graph.nodes)
-    #pairs = [(a, b) for a in nodes for b in nodes if a != b]
+        # Должен быть не один путь между парой вершни, чтобы 
+        # Анализатор обрезает все и вероятности не нужны
+        pathes = []
+        for pair in pairs:
+            try:
+                path = nx.dijkstra_path(graph, *pair, weight='_')
 
-    # Оставляем старые стоки
-    pairs = [(a, b) for a in nodes for b in nodes if a != b 
-                                                  #and b[0] == 'sink'
-                                                  #and a[0] == 'source'
-    ]
+                for node in path:
+                    if 'diverter' in node:
+                        pathes.append(path)
+                        break
+            except nx.NetworkXNoPath:
+                pass
 
-    # Найти кратчайшие пути между ними
-    # Кратчайший путь наиболее вероятен при маршрутизации
+        pathes.sort(key=len)
+        # Выбрать самый длинный путь
 
+        # Должен присутствовать хотя бы одни разделитель
 
-    # Должен быть не один путь между парой вершни, чтобы 
-    # Анализатор обрезает все и вероятности не нужны
-    pathes = []
-    for pair in pairs:
-        try:
-            path = nx.dijkstra_path(graph, *pair, weight='_')
+        while pathes:
+            longest = pathes.pop()
 
-            #if len(path) > 2:
-            #    pathes.append(path)
+            yield longest
 
-            ok = False
-            for node in path:
-                if 'diverter' in node[0]:
-                    ok = True
+            # Удалить пары, где конечная вершина совпадает, а начальная лежит на пути
+            # Так как кратчайший путь наиболее вероятен при маршрутизации, мы считаем,
+            # что нейронки будут получать эмбеддинги, для которых устойчивость уже
+            # доказана
 
-            if ok:
-                pathes.append(path)
+            cond = lambda e: e[-1] != longest[-1] or e[0] not in longest
 
-            #print(path)
-        except nx.NetworkXNoPath:
-            pass
+            # Для нас доставка на разделителях, которые ведут в другой сток
+            # всегда правильная
+            for path in pathes:
+                if not cond(path):
+                    print('AAAAAAAAAAAAAAAAAAAAAAAAA')
+                    print(path[0], path[-1])
 
-    pathes.sort(key=len)
-    # Выбрать самый длинный путь
-
-    # Должен присутствовать хотя бы одни разделитель
-
-    while len(pathes) != 0:
-        #print(pathes)
-        longest = pathes.pop()
-        #print(pathes)
-
-        #print(longest)
-        yield longest
-
-        # Удалить пары, где конечная вершина совпадает, а начальная лежит на пути
-        # Так как кратчайший путь наиболее вероятен при маршрутизации, мы считаем,
-        # что нейронки будут получать эмбеддинги, для которых устойчивость уже
-        # доказана
-
-        cond = lambda e: e[-1] != longest[-1] or e[0] not in longest
-        pathes = list(filter(cond, pathes))
+            pathes = list(filter(cond, pathes))
 
 
-def full_embedding_adversarial_verification(verifier, gr, spc, ma_ver, eps,
-        const_bound, soft, smooth):
-    grr = RouterGraph(gr)
+    import time
+    grr = Network(gr)
+
+    log = []
 
     counter = 0
     for pair in get_pair(grr.graph):
+
         print('')
         print('')
         print('')
@@ -85,16 +90,26 @@ def full_embedding_adversarial_verification(verifier, gr, spc, ma_ver, eps,
         print('')
         print('')
         source, sink = (pair[0], pair[-1])
+        print('Pair')
         print(source, sink)
 
-        ma = MarkovAnalyzer(grr.graph, sink, spc, ma_ver)
-        if len(ma.params) == 0:
-            print('NOT PARAMS')
+
+
+    sink_pairs
+
+    row = [(source, sink)]
+
+    mc = AbsorbingMC(network, sink, is_spc, is_verbose)
+
+    for source:
+        edt_solver = EDTSolver(mc, onode, network)
+        if not edt_solver.nontriv_dvtrs:
+            print('')
             continue
 
-    # Нужно как-то соблюсти условие поглощения
+        exit()
 
-        adv = PGDAdversary(rho=eps,
+        adv = PGDAdversary(edt_solver, rho=eps,
                            steps=100,
                            step_size=0.02,
                            random_start=True,
@@ -105,43 +120,27 @@ def full_embedding_adversarial_verification(verifier, gr, spc, ma_ver, eps,
                            repeat_mode="any",
                            dtype=torch.float64)
 
-        sink_embedding = grr.node_to_embeddings(sink, sink)[0]
-        print(sink_embedding)
-
-        embedding_packer = EmbeddingPacker(grr, sink, sink_embedding,
-                list(ma.chain))
-        _, lambdified_objective = ma.get_edt_sol(source)
-        print(_)
-        print(lambdified_objective)
-
-
-        def get_gradient(x: torch.Tensor) -> Tuple[torch.Tensor, float, str]:
-            x = Util.optimizable_clone(x.flatten())
-            objective_value, objective_inputs = \
-                    embedding_packer.compute_objective(
-                embedding_packer.unpack(x),
-                ma.nontrivial_diverters,
-                lambdified_objective,
-                soft, smooth)
-            print(objective_value)
-            objective_value.backward()
-            aux_info = ", ".join([f"{param}={value.detach().cpu().item():.4f}"
-                                  for param, value in zip(ma.params, objective_inputs)])
-            return x.grad, objective_value.item(), f"[{aux_info}]"
-
-
         best_embedding = adv.perturb(embedding_packer.initial_vector(), get_gradient)
-        _, objective, aux_info = get_gradient(best_embedding)
-        print('COST')
-        print(objective)
-        const_bound = objective * 1.05
-        print(const_bound)
+        k = [0.95, 0.99, 1.01. 1.05]
+        _, t_top, aux_info = get_gradient(best_embedding)
 
+        for t_b in ks:
+            t_b = t_top * k
+            t = time.process_time()
+            #print('COST')
+            #print(const_bound)
+            result = verifier.verify_delivery_cost_bound(
+                    source, sink,
+                    ma,
+                    eps, const_bound)
+            #print(result)
+            elapsed_time = time.process_time() - t
+            #print('ELAPSED')
+            #print(elapsed_time)
 
-        result = verifier.verify_delivery_cost_bound(
-                *pair,
-                ma,
-                eps, const_bound)
+#                $o_1 \to i_2$ & 83.84 & 55.71 & +   & 1.60 \\              |~
+#                              &       & 50.41 &  -  & 0.13 ⏎ 
+
         counter = counter + 1
 
     print(counter)

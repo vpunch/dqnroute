@@ -1,0 +1,224 @@
+\documentclass[a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[english,russian]{babel}
+
+\usepackage{graphicx}
+
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage[tableposition=top]{caption}
+\newcommand{\sprule}{\rule{0pt}{1.3em}}
+
+\usepackage[newfloat, cache=false]{minted}
+
+\usepackage{float}
+\newcommand{\fig}[3][1]{
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=#1\textwidth]{figs/#2}
+        \caption{#3}\label{#2}
+    \end{figure}
+}
+
+\usepackage{algpseudocode}
+\usepackage{algorithm}
+
+\usepackage[singlelinecheck=false]{caption}
+\DeclareCaptionLabelSeparator{labelsep}{~---~}
+\captionsetup{labelsep=labelsep}
+
+\DeclareCaptionLabelFormat{custlisting}{Листинг #2}
+\captionsetup[listing]{justification=raggedright, labelformat=custlisting,
+position=top}
+\DeclareCaptionLabelFormat{gostfigure}{Рисунок #2}
+\captionsetup[figure]{justification=centering, labelformat=gostfigure,
+position=bottom}
+
+
+\begin{document}
+
+\section{Алгоритм верификации состязательной устойчивости времени доставки
+сумки по отношению к эмбеддингам вершин для всей конвейерной сети}
+
+\subsection{Анализ графа сети}
+
+Данный алгоритм основывается на уже разработанном алгоритме
+верификации~\cite{base-alg}. Можно выполнить верификацию на всех парах вершин
+в графе конвейерной сети, число которых равняется $n \choose 2$, где $n$ ---
+размер графа. Но мы можем улучшить производительность алгоритма, минимизируя
+количество пар. Рассмотрим пример графа, представленный на
+рисунке~\ref{example-graph}.
+
+% Не сочетания, а размещения
+
+\fig[.25]{example-graph}{Пример конвейерной сети}
+
+Мы считаем, что разделители хорошо обучены, поэтому сумка обычно движется по
+кратчайшему пути. Тогда если устойчивость для пары вершин $(j_1, d_4)$
+доказана, мы можем считать, что она соблюдается для суффиксов кратчайшего пути:
+$(d_1, d_4), (d_3, d_4)$ --- так как соответствующие нейронные сети будут
+получать одинаковые эмбеддинги на вход.
+
+Задача поиска ожидаемого времени доставки параметризируется множеством
+разделителей, поэтому время доставки для исходной пары и для суффикса
+соответственно можно формализовать следующим образом: $\{ d_1, d_3 \} \to
+t_{j_1} $, $\{d_3\} \to t_{d_3}$ . Задача для суффикса является подзадачей
+для исходной пары. Нам также следует учитывать, что если пара не является
+суффиксом, она может повторять задачу другой пары, как в случае с $(j_1, d_4)$
+и $(j_2, d_4)$.
+
+Чтобы из множества пар, на которых необходимо запускать верификацию, исключить
+наибольшее число элементов, будем искать пару, которая имеет наибольший
+кратчайший путь и содержит наибольшее число суффиксов.
+
+\subsection{Описание алгоритма}
+
+Псевдокод алгоритма приведен в листинге~\ref{alg-desc}.
+
+\begin{listing}[H]
+\caption{Псевдокод алгоритма}\label{alg-desc}
+\begin{algorithmic}[1]
+\Procedure{Pairs}{$g$}
+    \State $V \gets$ Nodes($g$)
+    \For{pair $\in V^2$}
+        \State $p \gets$ DijkstraPath($g$, pair)
+        \If{$\exists\ p\ \land$ diverter $\in p$}
+            \State $P \gets p$
+        \EndIf
+    \EndFor
+    \State
+    \State Sort($P$) \Comment по возрастанию кол-ва узлов
+    \While{$P$ $\neq \emptyset$}
+        \State $p \gets$ Pop($P$)
+        \State RemoveSuffixes($P$, $p$)
+        \State pair $\gets (p[0], p[-1])$
+        \If{Diverters(pair) $\not\in$ Diverters(WithSink(res, $p[-1]$))}
+        \State res $\gets$ pair
+        \EndIf
+    \EndWhile
+    \State
+    \State \Return res
+\EndProcedure
+\State
+\Procedure{FullEmbAdvVerif}{$g$}
+    \For{$p \in$ Pairs($g$)}
+        \State $m \gets$ CreateAbsorbingMC($g$, $p[1]$) \Comment если конечный узел не 
+        \State \Comment является стоком, то необходимо 
+        \State \Comment удалить все его исходящие ребра
+        \State $s \gets$ CreateEDTSolver($m$, $p[0]$)
+        \If{NontrivDvtrs($s$) $= \emptyset$}
+            \State \textbf{continue}
+        \EndIf
+        \State
+        \State $t_{\top} \gets$ BoundEstimation($s$)
+        \For{$k \in (0.95, 0.99, 1.01, 1.05)$}
+            \State $t_b \gets t_{\top} \cdot k$
+            \State res $\gets$ EmbAdvVerif($t_b$)
+        \EndFor
+    \EndFor
+\EndProcedure
+\end{algorithmic}
+\end{listing}
+
+
+\begin{enumerate}
+    \item Для каждой пары узлов графа конвейерной сети находим кратчайший путь~(4).
+        Если путь существует и содержит хотя бы один разделитель, то
+        сохраняем его~(5--6).
+
+    \item Извлекаем самый длинный путь и удаляем все его суффиксы из множества
+        найденных путей~(10--13). Если множество разделителей данной пары не совпадает с
+        каким-либо множеством разделителей сохраненных пар, которые имеют тот
+        же сток, то сохраняем эту пару~(14--16).
+
+    \item Если найденная пара имеет нетривиальные разделители, то находим для
+        нее оценку времени доставки и выполняем верификацию~(24--36).
+\end{enumerate}
+
+\subsection{Результат работы}
+
+Результаты выполнения алгоритма приведены в таблице~\ref{alg-res}
+
+\begin{longtable}{rrrcr}
+\caption{Результат полной верификации сети}\label{alg-res}\\
+    \toprule
+    & $t_{\top}$ & $t_b$ & \thead{Вериф.} & Прод., \\
+    &         &       &              & c\\
+    \midrule
+    $o_1 \to d_7$ & 40.10 & 38.10 & $-$ & 0.09 \\
+              &       & 39.70 & $-$ & 0.19 \\
+              &       & 40.50 & $+$ & 0.78 \\
+              &       & 42.11 & $+$ & 0.52 \\
+    \sprule
+    $o_1 \to d_8$ & 50.10 & 47.60 & $-$ & 0.09 \\
+              &       & 49.60 & $-$ & 0.11 \\
+              &       & 50.60 & $+$ & 0.74 \\
+              &       & 52.61 & $+$ & 0.34 \\
+    \sprule
+    $o_1 \to i_0$ & 50.15 & 47.64 & $-$ & 0.09 \\
+              &       & 49.65 & $-$ & 0.11 \\
+              &       & 50.65 & $+$ & 0.77 \\
+              &       & 52.66 & $+$ & 0.53 \\
+    \sprule
+    $o_0 \to i_0$ & 40.20 & 38.19 & $-$ & 0.10 \\
+              &       & 39.80 & $-$ & 0.12 \\
+              &       & 40.60 & $+$ & 0.94 \\
+              &       & 42.21 & $+$ & 0.66 \\ 
+    \sprule
+    $o_0 \to i_1$ & 53.10 & 50.45 & $-$ & 0.11 \\
+              &       & 52.57 & $-$ & 0.11 \\
+              &       & 53.63 & $+$ & 0.76 \\
+              &       & 55.76 & $+$ & 0.41 \\
+    \sprule
+    $o_1 \to i_1$ & 43.25 & 41.09 & $-$ & 0.15 \\
+              &       & 42.82 & $-$ & 0.17 \\
+              &       & 43.68 & $+$ & 2.85 \\
+              &       & 45.41 & $+$ & 1.80 \\
+    \sprule
+    $o_1 \to i_2$ & 53.06 & 50.41 & $-$ & 0.12 \\
+              &       & 52.53 & $-$ & 0.16 \\
+              &       & 53.59 & $+$ & 4.54 \\
+              &       & 55.71 & $+$ & 1.64 \\
+    \sprule
+    $o_0 \to i_2$ & 53.07 & 50.42 & $-$ & 0.09 \\
+              &       & 52.54 & $-$ & 0.11 \\
+              &       & 53.60 & $+$ & 0.63 \\
+              &       & 55.72 & $+$ & 0.28 \\
+    \newpage
+    \sprule
+    $o_1 \to i_3$ & 43.10 & 40.95 & $-$ & 0.14 \\
+              &       & 42.67 & $-$ & 0.17 \\
+              &       & 43.53 & $+$ & 2.27 \\
+              &       & 45.26 & $+$ & 1.45 \\
+    \sprule
+    $o_0 \to i_3$ & 43.15 & 40.99 & $-$ & 0.10 \\
+              &       & 42.72 & $-$ & 0.11 \\
+              &       & 43.58 & $+$ & 0.91 \\
+              &       & 45.31 & $+$ & 0.54 \\
+    \sprule
+    $d_3 \to i_3$ & 43.10 & 40.95 & $-$ & 0.10 \\
+              &       & 42.67 & $-$ & 0.12 \\
+              &       & 43.53 & $+$ & 0.82 \\
+              &       & 45.26 & $+$ & 0.56 \\
+    \sprule
+    $o_1 \to j_0$ & 30.10 & 28.60 & $-$ & 0.09 \\
+              &       & 29.80 & $-$ & 0.11 \\
+              &       & 30.40 & $+$ & 0.89 \\
+              &       & 31.61 & $+$ & 0.52 \\
+    \bottomrule
+\end{longtable}
+
+% Добавить вывод по данным,
+% изначальное кол-во пар,
+% явно указать кол-во пар, которые были рассмотрены
+
+% Может больше смылса использовать общую (большую) границу для каждой пары?
+
+\begin{thebibliography}{3}
+    \bibitem{base-alg}
+        Мультиагентные алгоритмы маршрутизации на основе глубоких нейронных
+        сетей с подкреплением и их верификация. --- Санкт-Петербург. --- 2020.
+        --- 108 c.
+\end{thebibliography}
+\end{document}

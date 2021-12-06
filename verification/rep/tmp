@@ -1,0 +1,29 @@
+%$1 \to 2$
+%\begin{table}\centering\setlength\tabcolsep{3.5pt}\renewcommand\arraystretch{1.25}
+%  \noindent\makebox[\textwidth]{%
+%    \begin{tabular}{|r|rr|rr|}
+%      \hline
+%      \diagbox[width=\dimexpr \textwidth/8+2\tabcolsep\relax, height=1cm]{ $t_b$ }{$\epsilon$ $t_m$}
+%                   & 0.01 & 42 & 0.1 & 55 \\
+%      \hline
+%        41 & 3 & + & 4 & +\\
+%      41 & 3 & + & 4 & +\\
+%      \hline
+%    \end{tabular}
+%  }%
+%\end{table}
+
+
+%\newenvironment{mytable}{
+%    \begin{minipage}{.5\linewidth}
+%    \caption{First}
+%    \begin{tabular}{@{}crrcr@{}}
+%    \toprule
+%    & $t_{\top}$ & $t_b$ & \thead{Res.} & Dur. \\
+%    &         &       &              & (s) \\
+%    \midrule
+%}{
+%    \bottomrule
+%    \end{tabular}
+%    \end{minipage}%
+%}

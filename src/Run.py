@@ -975,7 +975,7 @@ def get_symbolic_analyzer() -> SymbolicAnalyzer:
 def get_nnet_verifier() -> NNetVerifier:
     assert args.marabou_path is not None, \
         "You must specify --verification_marabou_path for command embedding_adversarial_verification."
-    return NNetVerifier(g, args.marabou_path, NETWORK_FILENAME, PROPERTY_FILENAME, probability_smoothing,
+    return NNVerifier(g, args.marabou_path, NETWORK_FILENAME, PROPERTY_FILENAME, probability_smoothing,
                         softmax_temperature, emb_dim, args.linux_marabou_memory_limit_mb)
 
 
@@ -1220,7 +1220,7 @@ elif args.command == "embedding_adversarial_verification":
 
 
 
-elif args.command == "full_embedding_adversarial_verification":
+elif args.command == "full_emb_advers_verif":
     verifier = get_nnet_verifier()
     getattr(verif_cmds, args.command)(verifier, dqn_single_model_worlds[0], args.simple_path_cost,
             False, args.input_eps_l_inf, args.cost_bound, softmax_temperature, probability_smoothing)

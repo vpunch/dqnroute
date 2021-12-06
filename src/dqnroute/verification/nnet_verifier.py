@@ -336,7 +336,7 @@ class NNetVerifier:
         I = torch.tensor(np.identity(self.emb_dim), dtype=torch.float64)
         result = torch.zeros(self.emb_dim * 3 * m, self.emb_dim * n, dtype=torch.float64)
         
-        for prob_index, diverter_key in enumerate(ma.nontrivial_diverters):
+        for prob_index, diverter_key in enumerate(ma.nontrivial_dvtrs):
             _, neighbors, _ = self.g.node_to_embeddings(diverter_key, sink)
             #neighbors = list(ma.chain.successors(diverter_key)
                 
@@ -455,22 +455,22 @@ class NNetVerifier:
         """
         m = len(ma.params)
         n = self.embedding_packer.number_of_embeddings()
-        print(f"  [depth={depth}] Verified probability mass percentage: {self._verified_fraction(m) * 100:.7f}%")
-        print(f"  [depth={depth}] Currently verifying {region}")
+        #print(f"  [depth={depth}] Verified probability mass percentage: {self._verified_fraction(m) * 100:.7f}%")
+        #print(f"  [depth={depth}] Currently verifying {region}")
         
         # R is our probability hyperrectangle
         
         # 1. Prove or refute ∀p ∈ R cost ≤ cost_bound with CSP/SMT solvers
-        print(f"  [depth={depth}] Calling Z3...")
+        #print(f"  [depth={depth}] Calling Z3...")
         if self._prove_bound_for_region(m, cost_bound, region):
             self._verified_volume_meter += region.volume()
-            print(f"  [depth={depth}] Z3 proved that the bound cannot be exceeded in"
-                  " this probability region")
+            #print(f"  [depth={depth}] Z3 proved that the bound cannot be exceeded in"
+            #      " this probability region")
             # verified and nothing more to check here
             return None
         
         # 2. Find out whether R is reachable (for some allowed embedding)
-        print(f"  [depth={depth}] Calling Marabou...")
+        #print(f"  [depth={depth}] Calling Marabou...")
         result = self.verify_adv_robustness(
             self.net_large,
             [self.A_large, self.B_large, self.C_large],
@@ -479,8 +479,8 @@ class NNetVerifier:
             region.get_reachability_constraints()
         )
         if type(result) == Verified:
-            print(f"  [depth={depth}] Marabou proved that the bound cannot be exceeded in"
-                  " this probability region")
+            #print(f"  [depth={depth}] Marabou proved that the bound cannot be exceeded in"
+            #      " this probability region")
             self._verified_volume_meter += region.volume()
             # verified and nothing more to check here
             return None
@@ -492,7 +492,7 @@ class NNetVerifier:
             ys = Util.conditional_to_cuda(torch.DoubleTensor(result.ys))
             embedding_dict = self.embedding_packer.unpack(xs)
             objective_value, ps = self.embedding_packer.compute_objective(
-                embedding_dict, ma.nontrivial_diverters, self.lambdified_objective,
+                embedding_dict, ma.nontrivial_dvtrs, self.lambdified_objective,
                 self.softmax_temperature, self.probability_smoothing)
             objective_value = objective_value.item()
             executed_ps = [p.item() for p in ps]
@@ -501,16 +501,16 @@ class NNetVerifier:
                                                     self.softmax_temperature,
                                                     self.probability_smoothing).item() for i in range(m)
             ]
-        print(f"  [depth={depth}] Checking candidate counterexample with"
-                f" ys={Util.list_round(counterexample_ps, ROUND_DIGITS)}"
-                f" [cross-check: {Util.list_round(executed_ps, ROUND_DIGITS)}]...")
+        #print(f"  [depth={depth}] Checking candidate counterexample with"
+        #        f" ys={Util.list_round(counterexample_ps, ROUND_DIGITS)}"
+        #        f" [cross-check: {Util.list_round(executed_ps, ROUND_DIGITS)}]...")
         result.add_objective_value(np.array(counterexample_ps), objective_value)
         if objective_value >= cost_bound:
-            print(f"  [depth={depth}] True counterexample found!")
+            #print(f"  [depth={depth}] True counterexample found!")
             return result
 
         # 4. If no conclusion can be made, split R and schedule verification for children
-        print(f"  [depth={depth}] No conclusion, trying recursively...")
+        #print(f"  [depth={depth}] No conclusion, trying recursively...")
         for smaller_region in region.split():
             region_queue.append((smaller_region, depth + 1))
         
@@ -580,7 +580,7 @@ class NNetVerifier:
         for line in final_lines:
             #print(line)
             lines += [line.strip()]
-        print("  " + "  ".join(lines))
+        #print("  " + "  ".join(lines))
         if returncode != 0:
             raise MarabouException(f"Marabou terminated with unexpected exit code {returncode}!")
             
