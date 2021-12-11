@@ -40,6 +40,25 @@ Now the file `Marabou` must be present in the current directory.
 
 See `dqnroute/src/VerificationExperiments.py` to run verification experiments.
 
+```
+python ./Run.py
+../launches/conveyor_topology_mukhutdinov/original_example_graph.yaml
+../launches/conveyor_topology_mukhutdinov/original_example_settings_break_test.yaml
+--routing_algorithms=dqn_emb
+--command compute_edt
+--sink=1
+--source=1
+--verbose
+```
+
+```
+python ./Run.py
+../launches/conveyor_topology_mukhutdinov/original_example_graph.yaml
+../launches/conveyor_topology_mukhutdinov/original_example_settings_break_test.yaml
+--command find_advers_emb --routing_algorithms=dqn_emb --sink=3 --source=1
+--max_perturbation_norm=0.4 --verbose
+```
+
 The example of running the experiment on the command line:
 
 ```

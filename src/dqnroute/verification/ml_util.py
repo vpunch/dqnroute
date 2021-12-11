@@ -15,6 +15,30 @@ class Util(ABC):
     
     # if False, will use CPU even if CUDA is available
     cuda_enabled = False
+
+    @staticmethod
+    def q_values_to_first_probability(qs: torch.Tensor, temperature: float, alpha: float) -> torch.Tensor:
+        """
+        For DQNroute-LE, computes the probability of routing to the first successor of a node based on
+        produced Q values.
+        :param qs: 1D tensor of Q values for each successor of the current node.
+        :param temperature: temperature (T) hyperparameter.
+        :param alpha: probability smoothing parameter (between 0 and 1).
+        :return: the probability of routing to the first successor of a node.
+        """
+        return Util.smooth((qs / temperature).softmax(dim=0)[0], alpha)
+
+    @staticmethod
+    def smooth(p, alpha: float):
+        """
+        Applies probability smoothing, which shifts all probabilities closer to 0.5. This removes
+        problems related to dealing with infinite or large values caused by extreme probabilities.
+        :param p: number, array or tensor.
+        :param alpha: smoothing parameter (between 0 and 1).
+        :return: smoothed p.
+        """
+        # smoothing to get rid of 0 and 1 probabilities that lead to saturated gradients
+        return (1 - alpha) * p + alpha / 2
         
     @staticmethod
     def optimizable_clone(x: torch.Tensor) -> torch.Tensor:

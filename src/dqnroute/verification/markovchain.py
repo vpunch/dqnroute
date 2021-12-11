@@ -6,7 +6,8 @@ from sympy.solvers.solveset import linsolve
 import networkx as nx
 import itertools
 
-from .router_graph import RouterGraph
+from .network import Network
+
 from ..utils import AgentId
 
 
@@ -20,8 +21,8 @@ class AbsorbingMC:
     def __init__(self,
                  network: Network,
                  sink:    AgentId,
-                 is_spc:  bool,
-                 verbose: bool):
+                 is_spc:  bool,  # simple path cost
+                 verbose: bool) -> None:
         self.sink = sink
         self.is_spc = is_spc
         self.verbose = verbose
@@ -30,42 +31,33 @@ class AbsorbingMC:
 
         self.__find_edt_sol()
 
-    def __create_absorbing_chain(self, network: RouterGraph):
-        # TODO копировать с оставлением длины ребер, длину переименовать в
-        # label
+    def __create_absorbing_chain(self, network: Network) -> None:
         chain = network.graph.copy()
         # A sink must be an absorbing state
         chain.remove_edges_from(list(chain.edges(self.sink)))
 
-        # TODO здесь  надо переписать с использованием
-        # матрицы достижимости
-
         # We are interested in the delivery of a bag only to our stock,
         # so we need to remove the rest of the stocks
         # We also need to remove nodes from which we cannot get into an
-        # absorbing state
+        # absorbing state (absorbing chain property)
         for node in network.graph:
             if chain.has_node(node) and node != self.sink:
-                d = list(nx.descendants(chain, node))
-                if self.sink in d:
+                ds = list(nx.descendants(chain, node))
+                if self.sink in ds:
                     continue
 
                 # If we cannot get into the sink from the node, then we
                 # cannot get there from the descendants of the node
-                chain.remove_nodes_from(d + [node])
+                chain.remove_nodes_from(ds + [node])
 
         for f, s in chain.edges:
-            chain[f][s]['label'] = network.get_edge_length(f, s)
+            chain[f][s]['length'] = network.get_section_len(f, s)
 
-        chain.add_edge(self.sink, self.sink)
+        #chain.add_edge(self.sink, self.sink)
 
         if self.verbose:
-            A = nx.drawing.nx_agraph.to_agraph(chain)
-            A.node_attr['shape'] = 'box'
-            A.draw(f'amc-{self.sink}.png', prog='dot')
-
             print(f'Absorbing Markov chain for node {self.sink} is created')
-            print(A)
+            network.print(f'amc-{self.sink}', chain)
 
         self.chain = chain
 
@@ -75,8 +67,7 @@ class AbsorbingMC:
         """
 
         nodes = list(self.chain)
-
-        self.node_to_id = dict(zip(nodes, itertools.count()))
+        self.node_idx = dict(zip(nodes, itertools.count()))
 
         # We can use P instead of Q for convenience
 
@@ -88,29 +79,29 @@ class AbsorbingMC:
         I = eye(P.rows)
 
         for node in self.chain:
-            nid = self.node_to_id[node]
+            idx = self.node_idx[node]
 
             if node == self.sink:
-                b[nid] = 0
+                b[idx] = 0
                 continue
 
-            nbrs = list(self.chain.successors(node))
-            nbr_ids = [self.node_to_id[nbr] for nbr in nbrs]
+            nebrs = list(self.chain.successors(node))
+            nebr_idxs = [self.node_idx[nebr] for nebr in nebrs]
 
-            if len(nbrs) == 2:
+            if len(nebrs) == 2:
                 p = sym.symbols(f'p{node[1]}')
 
-                P[nid, nbr_ids[0]] = p
-                P[nid, nbr_ids[1]] = 1 - p
+                P[idx, nebr_idxs[0]] = p
+                P[idx, nebr_idxs[1]] = 1 - p
 
                 if not self.is_spc:
-                    f, s = [self.chain[node][nbr]['label'] for nbr in nbrs]
-                    b[nid] = f * p + s * (1 - p)
-            elif len(nbrs) == 1:
-                P[nid, nbr_ids[0]] = 1
+                    f, s = [self.chain[node][nebr]['length'] for nebr in nebrs]
+                    b[idx] = f * p + s * (1 - p)
+            elif len(nebrs) == 1:
+                P[idx, nebr_idxs[0]] = 1
 
                 if not self.is_spc:
-                    b[nid] = self.chain[node][nbrs[0]]['label']
+                    b[idx] = self.chain[node][nebrs[0]]['length']
             else:
                 assert False
 
@@ -120,22 +111,22 @@ class AbsorbingMC:
             print(f'Expected delivery time solution for {self.sink}')
             print(self.edt_sol)
 
-    def get_edt_sol(self, src_node) -> tuple[sym.Expr, Callable]:
+    def get_edt_func(self, source: AgentId) -> tuple[Callable, list[AgentId]]:
         """Get the expected delivery time as a function of routing
-        probabilities.
+        probabilities
         """
 
-        src_sol = sym.simplify(self.edt_sol[self.node_to_id[src_node]])
+        sol = sym.simplify(self.edt_sol[self.node_idx[source]])
 
-        self.params = []
-        self.nontrivial_dvtrs = []
-        for s in src_sol.free_symbols:
-            self.params.append(s)
-            self.nontrivial_dvtrs.append(('diverter', int(s.name[1:])))
+        params = []
+        nontriv_dvtrs = []
+        for s in sol.free_symbols:
+            params.append(s)
+            nontriv_dvtrs.append(('diverter', int(s.name[1:])))
 
-        calc_edt = sym.lambdify(self.params, src_sol)
+        calc_edt = sym.lambdify(params, sol)
 
         if self.verbose:
-            print(f"E({src_node} -> {self.sink}) = {src_sol}")
+            print(f'E({source} -> {self.sink}) = {sol}')
 
-        return src_sol, calc_edt
+        return calc_edt, nontriv_dvtrs

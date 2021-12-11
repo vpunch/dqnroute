@@ -14,8 +14,8 @@ import z3
 
 from .exception import MarabouException
 from .ml_util import Util
-from .router_graph import RouterGraph
-from .markov_analyzer import MarkovAnalyzer
+from .network import Network
+from .markovchain import AbsorbingMC
 from .embedding_packer import EmbeddingPacker
 from ..utils import AgentId
 
@@ -203,8 +203,14 @@ class NNetVerifier:
     layers in the neural network.
     """
     
-    def __init__(self, g: RouterGraph, marabou_path: str, network_filename: str, property_filename: str,
-                 probability_smoothing: float, softmax_temperature: float, emb_dim: int,
+    def __init__(self,
+                 network: Network,
+                 marabou_path: str,
+                 network_filename: str,
+                 property_filename: str,
+                 probability_smoothing: float,
+                 softmax_temperature: float,
+                 emb_dim: int,
                  linux_marabou_memory_limit_mb: Optional[int] = None):
         """
         Constructs NNetVerifier.
@@ -219,7 +225,7 @@ class NNetVerifier:
         :param linux_marabou_memory_limit_mb: memory limit for Marabou (Linux only).
             If None, no memory limit will be set.
         """
-        self.g = g
+        self.network = network
         self.marabou_path = marabou_path
         self.network_filename = network_filename
         self.property_filename = property_filename
@@ -263,7 +269,7 @@ class NNetVerifier:
         Other matrices will just be block diagonal.
         """
 
-        self.net = self.g.q_network.ff_net
+        self.net = self.network.q_net.ff_net
         self.A, self.B, self.C = [self.net[i].weight for i in [0, 2, 4]]
         self.a, self.b, self.c = [self.net[i].bias   for i in [0, 2, 4]]
         d1, d2 = self.A.shape[0] // 2, self.A.shape[1] // 2
@@ -323,7 +329,7 @@ class NNetVerifier:
             return np.infty
         return scipy.special.logit(unsmoothed) * self.softmax_temperature
     
-    def _get_embedding_conversion(self, sink: AgentId, ma: MarkovAnalyzer) -> torch.Tensor:
+    def _get_embedding_conversion(self, sink: AgentId, ma: AbsorbingMC) -> torch.Tensor:
         """
         Creates a matrix that transforms all (unshifted) embeddings to groups
         of shifted embeddings (sink, nbr1, nbr2) for each probability.
@@ -331,13 +337,13 @@ class NNetVerifier:
         :param ma: MarkovAnalyzer constructed for the chosen verification problem.
         :return: the conversion matrix as explained above.
         """
-        m = len(ma.params)
+        m = len(self.nontriv_dvtrs)
         n = self.embedding_packer.number_of_embeddings()
         I = torch.tensor(np.identity(self.emb_dim), dtype=torch.float64)
         result = torch.zeros(self.emb_dim * 3 * m, self.emb_dim * n, dtype=torch.float64)
         
-        for prob_index, diverter_key in enumerate(ma.nontrivial_dvtrs):
-            _, neighbors, _ = self.g.node_to_embeddings(diverter_key, sink)
+        for prob_index, diverter_key in enumerate(self.nontriv_dvtrs):
+            neighbors = self.network.get_neighbors(diverter_key)
             #neighbors = list(ma.chain.successors(diverter_key)
                 
             # fill the next (emb_dim * 3) rows of the matrix
@@ -385,7 +391,8 @@ class NNetVerifier:
         """
         return self._verified_volume_meter / (1 - self.probability_smoothing) ** probability_dimension
     
-    def verify_delivery_cost_bound(self, source: AgentId, sink: AgentId, ma: MarkovAnalyzer,
+    def verify_delivery_cost_bound(self, source: AgentId, sink: AgentId, ma:
+            AbsorbingMC,
                                    input_eps_l_inf: float, cost_bound: float) -> VerificationResult:
         """
         Checks the given bound on the expected bag delivery time.
@@ -396,16 +403,16 @@ class NNetVerifier:
         :param cost_bound: bound on the expected bag delivery time to check.
         :return: VerificationResult (Verified or a Counterexample).
         """
-        sink_embedding, _, _ = self.g.node_to_embeddings(sink, sink)
-        self.objective, self.lambdified_objective = ma.get_edt_sol(source)
+        sink_embedding = torch.Tensor(self.network.get_node_emb(sink))
+        self.lambdified_objective, self.nontriv_dvtrs = ma.get_edt_func(source)
 
         # gather all embeddings that we need to compute the objective:
-        self.embedding_packer = EmbeddingPacker(self.g, sink, sink_embedding,
+        self.embedding_packer = EmbeddingPacker(self.network, sink, sink_embedding,
                 list(ma.chain))
         # pack the default embeddings, the input center for robustness verification:
         self.emb_center = self.embedding_packer.initial_vector()
         
-        m = len(ma.params)
+        m = len(self.nontriv_dvtrs)
         n = self.embedding_packer.number_of_embeddings()
         print(f"  Number of embeddings: {n}, number of probabilities: {m}")
         
@@ -422,7 +429,7 @@ class NNetVerifier:
         # STAGE 3: verify all the regions using a divide-and-conquer approach
         # The BFS-like order of traversal is needed to ensure finite termination time when there is
         # a counterexample.
-        region_queue = deque([(ProbabilityRegion.get_initial(len(ma.params), self), 0)])
+        region_queue = deque([(ProbabilityRegion.get_initial(len(self.nontriv_dvtrs), self), 0)])
         while len(region_queue) > 0:
             region, depth = region_queue.popleft()
             maybe_ce = self._verify_delivery_cost_bound(source, sink, ma, input_eps_l_inf, cost_bound,
@@ -432,7 +439,8 @@ class NNetVerifier:
         # in this case, all the regions were checked:
         return Verified()
     
-    def _verify_delivery_cost_bound(self, source: AgentId, sink: AgentId, ma: MarkovAnalyzer,
+    def _verify_delivery_cost_bound(self, source: AgentId, sink: AgentId, ma:
+            AbsorbingMC,
                                     input_eps_l_inf: float, cost_bound: float,
                                     region: ProbabilityRegion, depth: int,
                                     region_queue: Deque[Tuple[ProbabilityRegion, int]]) -> Optional[Counterexample]:
@@ -453,7 +461,7 @@ class NNetVerifier:
         :param region_queue: FIFO queue of (probability region, depth) pairs.
         :return: a counterexample if it is found, None otherwise.
         """
-        m = len(ma.params)
+        m = len(self.nontriv_dvtrs)
         n = self.embedding_packer.number_of_embeddings()
         #print(f"  [depth={depth}] Verified probability mass percentage: {self._verified_fraction(m) * 100:.7f}%")
         #print(f"  [depth={depth}] Currently verifying {region}")
@@ -492,7 +500,7 @@ class NNetVerifier:
             ys = Util.conditional_to_cuda(torch.DoubleTensor(result.ys))
             embedding_dict = self.embedding_packer.unpack(xs)
             objective_value, ps = self.embedding_packer.compute_objective(
-                embedding_dict, ma.nontrivial_dvtrs, self.lambdified_objective,
+                embedding_dict, self.nontriv_dvtrs, self.lambdified_objective,
                 self.softmax_temperature, self.probability_smoothing)
             objective_value = objective_value.item()
             executed_ps = [p.item() for p in ps]

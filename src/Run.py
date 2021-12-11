@@ -29,18 +29,8 @@ from dqnroute.simulation.common import mk_job_id, add_cols, DummyProgressbarQueu
 from dqnroute.simulation.conveyors import ConveyorsRunner
 from dqnroute.utils import AgentId, get_amatrix_cols, make_batches, stack_batch, mk_num_list
 
-from dqnroute.verification.ml_util import Util
-from dqnroute.verification.router_graph import RouterGraph
-from dqnroute.verification.adversarial import PGDAdversary
-from dqnroute.verification.markov_analyzer import MarkovAnalyzer
-from dqnroute.verification.symbolic_analyzer import SymbolicAnalyzer, LipschitzBoundComputer
-from dqnroute.verification.nnet_verifier import NNetVerifier, marabou_float2str
-from dqnroute.verification.embedding_packer import EmbeddingPacker
-
-from dqnroute.verification import commands as verif_cmds
-
-NETWORK_FILENAME = "../network.nnet"
-PROPERTY_FILENAME = "../property.txt"
+import dqnroute.verification.commands as verif_cmds
+#from dqnroute.verification.symbolic_analyzer import SymbolicAnalyzer, LipschitzBoundComputer
 
 parser = argparse.ArgumentParser(
     description="Script to train, simulate and verify deep neural networks for baggage routing.",
@@ -69,33 +59,12 @@ parser.add_argument("--train_num_episodes", type=int, default=10000,
                     help="number of episodes for supervised pretraining")
 parser.add_argument("--force_train", action="store_true",
                     help="whether not to load previously saved trained models and force recomputation")
-parser.add_argument("--skip_graphviz", action="store_true",
-                    help="do not visualize graphs with Graphviz")
 
-# common verification / adversarial search parameters
-parser.add_argument("--cost_bound", type=float, default=100.0,
-                    help="upper bound on expected delivery cost to verify")
-parser.add_argument("--simple_path_cost", action="store_true",
-                    help="use the number of transitions instead of the total conveyor length as path cost")
-parser.add_argument("--input_eps_l_inf", type=float, default=0.1,
-                    help="maximum L_∞ discrepancy of input embeddings in adversarial robustness "
-                         "verification or search (default: 0.1)")
-parser.add_argument("--single_source", type=int, default=None,
-                    help="index of the single source to consider (if not specified, all sources will "
-                         "be considered)")
-parser.add_argument("--single_sink", type=int, default=None,
-                    help="index of the single sink to consider (if not specified, all sinks will "
-                         "be considered)")
+verif_cmds.add_arguments(parser)
+
 parser.add_argument("--learning_step_indices", type=str, default=None,
                     help="in learning step verification, consider only learning steps with these indices "
                          "comma-separated list without spaces; all steps will be considered if not specified)")
-
-# parameters specific to adversarial search with PGD (embedding_adversarial_search)
-parser.add_argument("--input_eps_l_2", type=float, default=1.5,
-                    help="maximum (scaled by dimension) L_2 discrepancy of input embeddings in "
-                         "adversarial search")
-parser.add_argument("--adversarial_search_use_l_2", action="store_true",
-                    help="use L_2 norm (scaled by dimension) instead of L_∞ norm during adversarial search")
 
 # parameters specific to learning step verification
 # (q_adversarial_search, q_adversarial_verification)
@@ -109,13 +78,6 @@ parser.add_argument("--q_adversarial_verification_no_points", type=int, default=
                     help="number of points to search for counterexamples before estimating the Lipschitz "
                          "constant in command q_adversarial_lipschitz (setting to less than 2 disables "
                          "this search)")
-
-# parameters specific to verification with Marabou
-# (embedding_adversarial_verification, embedding_adversarial_full_verification)
-parser.add_argument("--marabou_path", type=str, default=None,
-                    help="path to the Marabou executable")
-parser.add_argument("--linux_marabou_memory_limit_mb", type=int, default=None,
-                    help="set a memory limit in MB for Marabou (use only on Linux; default: no limit)")
 
 args = parser.parse_args()
 
@@ -451,10 +413,6 @@ if dqn_emb_exists:
     # dqn_combined_model_results, _ = dqn_experiments(1, True, True, True, False, True)
     dqn_single_model_results, dqn_single_model_worlds = dqn_experiments(1, False, True, True, False, True)
     #dqn_single_model_results, dqn_single_model_worlds = dqn_experiments(1, False, True, True, False, False)
-
-    g = RouterGraph(dqn_single_model_worlds[0])  # todo FIX
-    print("Reachability matrix:")
-    #g.print_reachability_matrix()
 
 
 # PPO part (pre-train + train)
@@ -953,64 +911,15 @@ def train(
     return event_series, world
 
 
-# 4. load the router graph
-
-def visualize(g: RouterGraph):
-    gv_graph = g.to_graphviz()
-    prefix = f"../img/topology_graph{filename_suffix}."
-    gv_graph.write(prefix + "gv")
-    for prog in ["dot", "circo", "twopi"]:
-        prog_prefix = f"{prefix}{prog}."
-        for fmt in ["pdf", "png"]:
-            path = f"{prog_prefix}{fmt}"
-            print(f"Drawing {path} ...")
-            gv_graph.draw(path, prog=prog, args="-Gdpi=300 -Gmargin=0 -Grankdir=LR")
-
-
-def get_symbolic_analyzer() -> SymbolicAnalyzer:
-    return SymbolicAnalyzer(g, softmax_temperature, probability_smoothing,
-                            args.verification_lr, delta_q_max=args.input_max_delta_q)
-
-
-def get_nnet_verifier() -> NNetVerifier:
-    assert args.marabou_path is not None, \
-        "You must specify --verification_marabou_path for command embedding_adversarial_verification."
-    return NNVerifier(g, args.marabou_path, NETWORK_FILENAME, PROPERTY_FILENAME, probability_smoothing,
-                        softmax_temperature, emb_dim, args.linux_marabou_memory_limit_mb)
-
-
-def get_sources(sink: AgentId) -> List[AgentId]:
-    """
-    :return: the list of all sources that are reachable from the specified sink. If a single source
-        was specified in command line arguments, only this source will be returned.
-    """
-    return [source for source in g.get_sources_for_node(sink)
-            if args.single_source is None or source[1] == args.single_source]
-
-
-def get_sinks() -> List[Tuple[AgentId, torch.Tensor]]:
-    """
-    :return: the list of all sinks. If a single sink was specified in command line arguments, only
-        this sink will be returned.
-    """
-    return [(sink, g.node_to_embeddings(sink, sink)[0]) for sink in g.sinks
-            if args.single_sink is None or sink[1] == args.single_sink]
-
-
-def get_source_sink_pairs(message: str, ma_verbose: bool = False) -> \
-        Generator[Tuple[AgentId, AgentId, torch.Tensor, MarkovAnalyzer], None, None]:
-    for sink, sink_embedding in get_sinks():
-        sink_embeddings = sink_embedding.repeat(2, 1)
-        for source in get_sources(sink):
-            print(f"{message} from {source} to {sink}...")
-            ma = MarkovAnalyzer(g.graph, sink, args.simple_path_cost, ma_verbose)
-            yield source, sink, sink_embedding, ma
-
-
 def get_learning_step_indices() -> Optional[Set[int]]:
     if args.learning_step_indices is None:
         return None
     return set([int(s) for s in args.learning_step_indices.split(",")])
+
+
+#def get_symbolic_analyzer() -> SymbolicAnalyzer:
+#    return SymbolicAnalyzer(g, softmax_temperature, probability_smoothing,
+#                            args.verification_lr, delta_q_max=args.input_max_delta_q)
 
 
 print(f"Running command {args.command}...")
@@ -1102,13 +1011,11 @@ if args.command == "run":
         dfs.append(df)
     dfs = pd.concat(dfs, axis=0)
 
-
     def print_sums(df):
         for tp in router_types:
             x = df.loc[df["router_type"] == tp, "count"].sum()
             txt = _legend_txt_replace.get(tp, tp)
             print(f"  {txt}: {x}")
-
 
     def plot_data(data, meaning="time", figsize=(15, 5), xlim=None, ylim=None,
                   xlabel="Simulation time", ylabel=None, font_size=14, title=None, save_path=None,
@@ -1150,156 +1057,133 @@ if args.command == "run":
         if save_path is not None:
             fig.savefig(f"../img/{save_path}", bbox_inches="tight")
 
-
     plot_data(dfs, figsize=(14, 8), font_size=22,
               time_save_path="time-plot.pdf",
               energy_save_path="energy-plot.pdf",
               collisions_save_path='collisions-plot.pdf'
               )
+elif args.command == 'compute_edt':
+    edt = getattr(verif_cmds, args.command)(
+            dqn_single_model_worlds[0],
+            args.sink,
+            args.source,
+            softmax_temperature,
+            probability_smoothing,
+            args.simple_path_cost,
+            args.verbose)
 
-# Compute the expression of the expected delivery cost and evaluate it
-elif args.command == "compute_expected_cost":
-    sa = get_symbolic_analyzer()
-    for source, sink, sink_embedding, ma in get_source_sink_pairs("Delivery", True):
-        _, lambdified_objective = ma.get_edt_sol(source)
-        ps = sa.compute_ps(ma, sink, sink_embedding.repeat(2, 1), 0, 0)
-        objective_value = lambdified_objective(*ps)
-        print(f"  Computed probabilities: {Util.list_round(ps, 6)}")
-        print(f"  E(delivery cost from {source} to {sink}) = {objective_value}")
+    print(f'EDT: {edt}')
+elif args.command == 'find_advers_emb':
+    emb, edt  = getattr(verif_cmds, args.command)(
+        dqn_single_model_worlds[0],
+        args.sink,
+        args.source,
+        softmax_temperature,
+        probability_smoothing,
+        args.max_perturbation_norm,
+        args.simple_path_cost,
+        args.euclid_norm,
+        args.verbose)
 
-# Search for adversarial examples w.r.t. input embeddings
-elif args.command == "embedding_adversarial_search":
-    if args.adversarial_search_use_l_2:
-        norm, norm_bound = "scaled_l_2", args.input_eps_l_2
-    else:
-        norm, norm_bound = "l_inf", args.input_eps_l_inf
-    adv = PGDAdversary(rho=norm_bound, steps=100, step_size=0.02, random_start=True, stop_loss=args.cost_bound,
-                       verbose=2, norm=norm, n_repeat=10, repeat_mode="any", dtype=torch.float64)
-    print(f"Trying to falsify ({norm}_norm(Δembedding) ≤ {norm_bound}) => (E(cost) < {args.cost_bound}).")
-    for source, sink, sink_embedding, ma in get_source_sink_pairs("Measuring adversarial robustness of delivery"):
-        # gather all embeddings that we need to compute the objective
-        #embedding_packer = EmbeddingPacker(g, sink, sink_embedding, ma.reachable_nodes)
-        embedding_packer = EmbeddingPacker(g, sink, sink_embedding,
-                list(ma.chain))
-        _, lambdified_objective = ma.get_edt_sol(source)
-        print('HERE')
-        print(_)
-
-
-        def get_gradient(x: torch.Tensor) -> Tuple[torch.Tensor, float, str]:
-            """
-            :param x: parameter vector (the one expected to converge to an adversarial example)
-            :return: a tuple (gradient pointing to the direction of the adversarial attack,
-                              the corresponding loss function value,
-                              auxiliary information for printing during optimization).
-            """
-            x = Util.optimizable_clone(x.flatten())
-            objective_value, objective_inputs = embedding_packer.compute_objective(
-                embedding_packer.unpack(x), ma.nontrivial_diverters, lambdified_objective,
-                softmax_temperature, probability_smoothing)
-            #print('OBJECTIVE_VALUE')
-            #print(objective_value)
-            objective_value.backward()
-            aux_info = ", ".join([f"{param}={value.detach().cpu().item():.4f}"
-                                  for param, value in zip(ma.params, objective_inputs)])
-            return x.grad, objective_value.item(), f"[{aux_info}]"
-
-
-        best_embedding = adv.perturb(embedding_packer.initial_vector(), get_gradient)
-        _, objective, aux_info = get_gradient(best_embedding)
-        print("  Found counterexample!" if objective >= args.cost_bound else "  Verified.")
-        print(f"  Best perturbed vector: {Util.to_numpy(best_embedding).round(3).flatten().tolist()} {aux_info}")
-        print(f"  Best objective value: {objective}")
-
-# Formally verify the expected cost bound w.r.t. input embeddings
-elif args.command == "embedding_adversarial_verification":
-    nv = get_nnet_verifier()
-    for source, sink, _, ma in get_source_sink_pairs("Verifying adversarial robustness of delivery"):
-        result = nv.verify_delivery_cost_bound(source, sink, ma, args.input_eps_l_inf, args.cost_bound)
-        print(f"  {result}")
-
-
-
-elif args.command == "full_emb_advers_verif":
-    verifier = get_nnet_verifier()
-    getattr(verif_cmds, args.command)(verifier, dqn_single_model_worlds[0], args.simple_path_cost,
-            False, args.input_eps_l_inf, args.cost_bound, softmax_temperature, probability_smoothing)
-
-
-
+    print(emb)
+    print(f'EDT: {edt}')
+elif args.command == 'verif_edt_bound_wrt_embs':
+    # dynamic graph?
+    func = getattr(verif_cmds, args.command)(
+        dqn_single_model_worlds[0],
+        args.sink,
+        args.source,
+        softmax_temperature,
+        probability_smoothing,
+        args.max_perturbation_norm,
+        args.marabou_path,
+        args.edt_bound,
+        args.simple_path_cost,
+        args.verify_dynamic_graph,
+        args.marabou_memory_limit,
+        args.verbose
+    )
+    print(func)
+#elif args.command == 'verif_edt_robustness_wrt_emb':
+#    func = getattr(verif.commands, args.command)(
+#        wordl
+#        use_l2
+#        norm_bound
+#        const_bound
+#        verbose
+#    )
 # Evaluate the expected delivery cost assuming a change in NN parameters and make plots            
-elif args.command == "q_adversarial_search":
-    sa = get_symbolic_analyzer()
-    learning_step_index = -1
-    requested_indices = get_learning_step_indices()
-    for source, sink, sink_embedding, ma in get_source_sink_pairs("Measuring robustness of delivery"):
-        sink_embeddings = sink_embedding.repeat(2, 1)
-        objective, lambdified_objective = ma.get_edt_sol(source)
-        for node_key in g.node_keys:
-            current_embedding, neighbors, neighbor_embeddings = g.node_to_embeddings(node_key, sink)
-            for neighbor_key, neighbor_embedding in zip(neighbors, neighbor_embeddings):
-                learning_step_index += 1
-                if requested_indices is not None and learning_step_index not in requested_indices:
-                    continue
-                print(f"  Considering learning step {node_key} → {neighbor_key}...")
-                # compute
-                # we assume a linear change of parameters
-                reference_q = sa.compute_gradients(current_embedding, sink_embedding,
-                                                   neighbor_embedding).flatten().item()
-                actual_qs = np.linspace(-sa.delta_q_max, sa.delta_q_max,
-                                        args.q_adversarial_no_points) + reference_q
-                kappa, lambdified_kappa = sa.get_transformed_cost(ma, objective, args.cost_bound)
-                objective_values, kappa_values = [torch.empty(len(actual_qs)) for _ in range(2)]
-                for i, actual_q in enumerate(actual_qs):
-                    ps = sa.compute_ps(ma, sink, sink_embeddings, reference_q, actual_q)
-                    objective_values[i] = lambdified_objective(*ps)
-                    kappa_values[i] = lambdified_kappa(*ps)
-                # print(((objective_values > args.cost_bound) != (kappa_values > 0)).sum())
-                fig, axes = plt.subplots(3, 1, figsize=(10, 10))
-                plt.subplots_adjust(hspace=0.4)
-                caption_starts = *(["Delivery cost (τ)"] * 2), "Transformed delivery cost (κ)"
-                values = *([objective_values] * 2), kappa_values
-                axes[0].set_yscale("log")
-                for ax, caption_start, values in zip(axes, caption_starts, values):
-                    label = (f"{caption_start} from {source} to {sink} when making optimization"
-                             f" step with current={node_key}, neighbor={neighbor_key}")
-                    print(f"    Plotting: {caption_start}...")
-                    ax.set_title(label)
-                    ax.plot(actual_qs, values)
-                    y_delta = 0 if np.ptp(values) > 0 else 5
-                    # show the zero step value:
-                    ax.vlines(reference_q, min(values) - y_delta, max(values) + y_delta)
-                    ax.hlines(values[len(values) // 2], min(actual_qs), max(actual_qs))
-                # show the verification bound:
-                for i in range(2):
-                    axes[i].hlines(args.cost_bound, min(actual_qs), max(actual_qs))
-                axes[2].hlines(0, min(actual_qs), max(actual_qs))
-                plt.savefig(f"../img/{filename_suffix}_{learning_step_index}.pdf", bbox_inches="tight")
-                plt.close()
-                print(f"    Empirically found maximum of τ: {objective_values.max():.6f}")
-                print(f"    Empirically found maximum of κ: {kappa_values.max():.6f}")
-
-# Formally verify the bound on the expected delivery cost w.r.t. learning step magnitude  
-elif args.command == "q_adversarial_verification":
-    sa = get_symbolic_analyzer()
-    sa.load_matrices()
-    learning_step_index = -1
-    requested_indices = get_learning_step_indices()
-    for source, sink, sink_embedding, ma in get_source_sink_pairs("Verifying robustness of delivery"):
-        objective, _ = ma.get_edt_sol(source)
-        for node_key in g.node_keys:
-            current_embedding, neighbors, neighbor_embeddings = g.node_to_embeddings(node_key, sink)
-            for neighbor_key, neighbor_embedding in zip(neighbors, neighbor_embeddings):
-                learning_step_index += 1
-                if requested_indices is not None and learning_step_index not in requested_indices:
-                    continue
-                print(f"  Considering learning step {node_key} → {neighbor_key}...")
-                lbc = LipschitzBoundComputer(sa, ma, objective, sink, current_embedding,
-                                             sink_embedding, neighbor_embedding, args.cost_bound)
-                if lbc.prove_bound(args.q_adversarial_verification_no_points):
-                    print("    Proof found!")
-                print(f"    Number of evaluations of κ: {lbc.no_evaluations}")
-                print(f"    Maximum depth reached: {lbc.max_depth}")
-
-else:
-    raise RuntimeError(f"Unknown command {args.command}.")
+#elif args.command == "q_adversarial_search":
+#    sa = get_symbolic_analyzer()
+#    learning_step_index = -1
+#    requested_indices = get_learning_step_indices()
+#    for source, sink, sink_embedding, ma in get_source_sink_pairs("Measuring robustness of delivery"):
+#        sink_embeddings = sink_embedding.repeat(2, 1)
+#        objective, lambdified_objective = ma.get_edt_sol(source)
+#        for node_key in g.node_keys:
+#            current_embedding, neighbors, neighbor_embeddings = g.node_to_embeddings(node_key, sink)
+#            for neighbor_key, neighbor_embedding in zip(neighbors, neighbor_embeddings):
+#                learning_step_index += 1
+#                if requested_indices is not None and learning_step_index not in requested_indices:
+#                    continue
+#                print(f"  Considering learning step {node_key} → {neighbor_key}...")
+#                # compute
+#                # we assume a linear change of parameters
+#                reference_q = sa.compute_gradients(current_embedding, sink_embedding,
+#                                                   neighbor_embedding).flatten().item()
+#                actual_qs = np.linspace(-sa.delta_q_max, sa.delta_q_max,
+#                                        args.q_adversarial_no_points) + reference_q
+#                kappa, lambdified_kappa = sa.get_transformed_cost(ma, objective, args.cost_bound)
+#                objective_values, kappa_values = [torch.empty(len(actual_qs)) for _ in range(2)]
+#                for i, actual_q in enumerate(actual_qs):
+#                    ps = sa.compute_ps(ma, sink, sink_embeddings, reference_q, actual_q)
+#                    objective_values[i] = lambdified_objective(*ps)
+#                    kappa_values[i] = lambdified_kappa(*ps)
+#                # print(((objective_values > args.cost_bound) != (kappa_values > 0)).sum())
+#                fig, axes = plt.subplots(3, 1, figsize=(10, 10))
+#                plt.subplots_adjust(hspace=0.4)
+#                caption_starts = *(["Delivery cost (τ)"] * 2), "Transformed delivery cost (κ)"
+#                values = *([objective_values] * 2), kappa_values
+#                axes[0].set_yscale("log")
+#                for ax, caption_start, values in zip(axes, caption_starts, values):
+#                    label = (f"{caption_start} from {source} to {sink} when making optimization"
+#                             f" step with current={node_key}, neighbor={neighbor_key}")
+#                    print(f"    Plotting: {caption_start}...")
+#                    ax.set_title(label)
+#                    ax.plot(actual_qs, values)
+#                    y_delta = 0 if np.ptp(values) > 0 else 5
+#                    # show the zero step value:
+#                    ax.vlines(reference_q, min(values) - y_delta, max(values) + y_delta)
+#                    ax.hlines(values[len(values) // 2], min(actual_qs), max(actual_qs))
+#                # show the verification bound:
+#                for i in range(2):
+#                    axes[i].hlines(args.cost_bound, min(actual_qs), max(actual_qs))
+#                axes[2].hlines(0, min(actual_qs), max(actual_qs))
+#                plt.savefig(f"../img/{filename_suffix}_{learning_step_index}.pdf", bbox_inches="tight")
+#                plt.close()
+#                print(f"    Empirically found maximum of τ: {objective_values.max():.6f}")
+#                print(f"    Empirically found maximum of κ: {kappa_values.max():.6f}")
+## Formally verify the bound on the expected delivery cost w.r.t. learning step magnitude  
+#elif args.command == "q_adversarial_verification":
+#    sa = get_symbolic_analyzer()
+#    sa.load_matrices()
+#    learning_step_index = -1
+#    requested_indices = get_learning_step_indices()
+#    for source, sink, sink_embedding, ma in get_source_sink_pairs("Verifying robustness of delivery"):
+#        objective, _ = ma.get_edt_sol(source)
+#        for node_key in g.node_keys:
+#            current_embedding, neighbors, neighbor_embeddings = g.node_to_embeddings(node_key, sink)
+#            for neighbor_key, neighbor_embedding in zip(neighbors, neighbor_embeddings):
+#                learning_step_index += 1
+#                if requested_indices is not None and learning_step_index not in requested_indices:
+#                    continue
+#                print(f"  Considering learning step {node_key} → {neighbor_key}...")
+#                lbc = LipschitzBoundComputer(sa, ma, objective, sink, current_embedding,
+#                                             sink_embedding, neighbor_embedding, args.cost_bound)
+#                if lbc.prove_bound(args.q_adversarial_verification_no_points):
+#                    print("    Proof found!")
+#                print(f"    Number of evaluations of κ: {lbc.no_evaluations}")
+#                print(f"    Maximum depth reached: {lbc.max_depth}")
+#
+#else:
+#    raise RuntimeError(f"Unknown command {args.command}.")

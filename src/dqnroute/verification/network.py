@@ -4,6 +4,7 @@ import networkx as nx
 import pygraphviz
 
 from ..utils import AgentId
+
 from ..simulation.conveyors import ConveyorsEnvironment
 
 
@@ -12,38 +13,76 @@ class Network:
 
     def __init__(self, world: ConveyorsEnvironment, verbose: bool) -> None:
         self.world = world
-
-        self.__check_embeddings()
+        self.verbose = verbose
 
         # Store clear graph
         graph = nx.DiGraph()
         graph.add_edges_from(world.topology_graph.edges)
         self.graph = graph
 
+        self.__check_embeddings()
+
         # Store mapping source/sink/junction/diverter id -> router id
 
-        abct_router = world.handlers.items()[0][1]  # abstract router
+        abct_router = list(world.handlers.items())[0][1]  # abstract router
 
         self.map_router_id = abct_router.node_mapping
 
         # Store neural network and node encoding method
 
-        router = abct_router.routers.items()[0][1]
-        # We need to increase analysis precision
+        router = list(abct_router.routers.items())[0][1]
         self.q_net = router.brain.double()
         self._idx_enc_method = router._nodeRepr
 
         self.reachable = self.__get_reachability_matrix()
 
-    def get_node_num(node: AgentId) -> int:
+        self.print('conv-net')
+
+    def __check_embeddings(self):
+        """Check that all routers return the same embeddings for the
+        corresponding nodes
+        """
+
+        embs = []
+        for _, abct_router in self.world.handlers.items():
+            for _, router in abct_router.routers.items():
+                emb = np.concatenate([router._nodeRepr(i)
+                                      for i in range(len(self.graph))])
+                embs.append(emb)
+
+        for i in range(len(embs)):
+            for j in range(i+1, len(embs)):
+                assert np.abs(emb[i] - emb[j]).max() > 0,\
+                       'The embeddings of the same node are different. This '\
+                       'may be caused by the nondeterminism in embeddings '\
+                       'computing.'
+
+    def __get_reachability_matrix(self):
+        nodes = sorted(self.graph)
+        reachable = {(f, s): f == s for f in nodes for s in nodes}
+
+        for node in nodes:
+            for d in list(nx.descendants(self.graph, node)):
+                reachable[node, d] = True
+
+        if self.verbose:
+            for f in nodes:
+                for s in nodes:
+                    print(int(reachable[f, s]), end=" ")
+
+                print(f)
+
+        return reachable
+
+    def get_node_num(self, node: AgentId) -> int:
         """Get absolute index for the node (node number)"""
 
-        return self.map_router_id(node)[1]
+        return self.map_router_id[node][1]
 
-    def get_section_len(f: AgentId, s: AgentId) -> int:
+    def get_section_len(self, f: AgentId, s: AgentId) -> int:
         return self.world.topology_graph[f][s]['length']
 
-    def get_conv_idx(f: AgentId, s: AgentId) -> int:
+    def get_conv_idx(self, f: AgentId, s: AgentId) -> int:
         return self.world.topology_graph[f][s]['conveyor']
 
     def get_neighbors(self, node: AgentId) -> list[AgentId]:
@@ -81,7 +120,7 @@ class Network:
 
         return [node for node in list(self.graph) if node[0] == ntype]
 
-    def print(self, name, graph=None) -> pygraphviz.AGraph:
+    def print(self, name: str, graph: nx.DiGraph = None) -> None:
         """Save network image to file"""
 
         if graph is None:
@@ -89,11 +128,11 @@ class Network:
 
         agraph = nx.drawing.nx_agraph.to_agraph(graph)
 
-        A.node_attr.update({'shape':     'box',
-                            'style':     'filled',
-                            'fixedsize': True,
-                            'width':     0.9,
-                            'height':    0.7})
+        agraph.node_attr.update({'shape':     'box',
+                                 'style':     'filled',
+                                 'fixedsize': True,
+                                 'width':     0.9,
+                                 'height':    0.3})
 
         node_bg = {'source':   '#8888FF',
                    'sink':     '#88FF88',
@@ -101,7 +140,7 @@ class Network:
                    'junction': '#EEEEEE'}
 
         for node in graph:
-            anode = agraph.get_node(n)
+            anode = agraph.get_node(node)
             anode.attr.update({'fillcolor': node_bg[node[0]],
                                'label':     f'{node[0]} {node[1]}'})
 
@@ -122,38 +161,5 @@ class Network:
                     iembs: tch.Tensor) -> tch.Tensor:
         return self.q_net.forward(dembs, iembs, nembs)
 
-    def __check_embeddings(self):
-        """Check that all routers return the same embeddings for the
-        corresponding nodes
-        """
-
-        embs = []
-        for _, abct_router in self.world.handlers.items():
-            for _, router in abct_router.routers.items():
-                emb = np.concatenate([router._nodeRepr(i)
-                                      for i in range(len(self.graph))])
-                embs.append(emb)
-
-        for i in range(len(embs)):
-            for j in range(i+1, len(embs)):
-                assert np.abs(emb[i] - emb[j]).max() == 0,\
-                       'The embeddings of the same node are different. This '\
-                       'may be caused by the nondeterminism in embeddings '\
-                       'computing.'
-
-    def __get_reachability_matrix(self):
-        nodes = sorted(self.graph)
-        reachable = {(f, s): f == s for f in nodes for s in nodes}
-
-        for node in nodes:
-            for d in list(nx.descendants(self.graph, node)):
-                reachable[node, d] = True
-
-        if self.verbose:
-            for f in nodes:
-                for s in nodes:
-                    print(int(reachable[f, s]), end=" ")
-
-                print(f)
-
-        return reachable
+    def maximize_load():
+        pass
